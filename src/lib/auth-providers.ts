@@ -5,7 +5,13 @@ import { encryptToken } from "./crypto";
 import { setSessionCookie, getSession } from "./session";
 import { Provider, AuditAction } from "@prisma/client";
 
-const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+export function getAppBaseUrl(): string {
+  return (
+    process.env.RENDER_EXTERNAL_URL ||
+    process.env.NEXT_PUBLIC_APP_URL ||
+    "http://localhost:3000"
+  ).replace(/\/$/, "");
+}
 
 export function generateRandomState(): string {
   return crypto.randomBytes(24).toString("hex");
@@ -13,7 +19,7 @@ export function generateRandomState(): string {
 
 export async function getSpotifyAuthUrl(): Promise<string> {
   const clientId = process.env.SPOTIFY_CLIENT_ID || "";
-  const redirectUri = `${APP_BASE_URL}/api/auth/spotify/callback`;
+  const redirectUri = `${getAppBaseUrl()}/api/auth/spotify/callback`;
   const state = generateRandomState();
 
   const cookieStore = await cookies();
@@ -40,7 +46,7 @@ export async function getSpotifyAuthUrl(): Promise<string> {
 
 export async function getGoogleAuthUrl(): Promise<string> {
   const clientId = process.env.GOOGLE_CLIENT_ID || "";
-  const redirectUri = `${APP_BASE_URL}/api/auth/google/callback`;
+  const redirectUri = `${getAppBaseUrl()}/api/auth/google/callback`;
   const state = generateRandomState();
 
   const cookieStore = await cookies();
@@ -85,7 +91,7 @@ export async function handleSpotifyCallback(code: string, state: string): Promis
 
   const clientId = process.env.SPOTIFY_CLIENT_ID || "";
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET || "";
-  const redirectUri = `${APP_BASE_URL}/api/auth/spotify/callback`;
+  const redirectUri = `${getAppBaseUrl()}/api/auth/spotify/callback`;
   const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
   const tokenRes = await fetch("https://accounts.spotify.com/api/token", {
@@ -197,7 +203,7 @@ export async function handleGoogleCallback(code: string, state: string): Promise
 
   const clientId = process.env.GOOGLE_CLIENT_ID || "";
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
-  const redirectUri = `${APP_BASE_URL}/api/auth/google/callback`;
+  const redirectUri = `${getAppBaseUrl()}/api/auth/google/callback`;
 
   const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",

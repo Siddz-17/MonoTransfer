@@ -53,8 +53,6 @@ services:
           type: web
           name: monotransfer-ytmusic
           property: host
-      - key: NEXT_PUBLIC_APP_URL
-        sync: false
       - key: SESSION_SECRET
         generateValue: true
       - key: TOKEN_ENCRYPTION_KEY
