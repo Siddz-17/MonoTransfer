@@ -1,11 +1,13 @@
-import crypto from "crypto";
-import { cookies } from "next/headers";
-import { prisma } from "./prisma";
-import { encryptToken } from "./crypto";
-import { setSessionCookie, getSession } from "./session";
-import { Provider, AuditAction } from "@prisma/client";
+import { NextRequest } from "next/server";
 
-export function getAppBaseUrl(): string {
+export function getAppBaseUrl(request?: NextRequest): string {
+  if (request) {
+    const proto = request.headers.get("x-forwarded-proto") || (request.url.startsWith("https") ? "https" : "http");
+    const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
+    if (host) {
+      return `${proto}://${host}`.replace(/\/$/, "");
+    }
+  }
   return (
     process.env.RENDER_EXTERNAL_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
@@ -17,9 +19,9 @@ export function generateRandomState(): string {
   return crypto.randomBytes(24).toString("hex");
 }
 
-export async function getSpotifyAuthUrl(): Promise<string> {
+export async function getSpotifyAuthUrl(request?: NextRequest): Promise<string> {
   const clientId = process.env.SPOTIFY_CLIENT_ID || "";
-  const redirectUri = `${getAppBaseUrl()}/api/auth/spotify/callback`;
+  const redirectUri = `${getAppBaseUrl(request)}/api/auth/spotify/callback`;
   const state = generateRandomState();
 
   const cookieStore = await cookies();
@@ -44,9 +46,9 @@ export async function getSpotifyAuthUrl(): Promise<string> {
   return `https://accounts.spotify.com/authorize?${params.toString()}`;
 }
 
-export async function getGoogleAuthUrl(): Promise<string> {
+export async function getGoogleAuthUrl(request?: NextRequest): Promise<string> {
   const clientId = process.env.GOOGLE_CLIENT_ID || "";
-  const redirectUri = `${getAppBaseUrl()}/api/auth/google/callback`;
+  const redirectUri = `${getAppBaseUrl(request)}/api/auth/google/callback`;
   const state = generateRandomState();
 
   const cookieStore = await cookies();
@@ -80,7 +82,7 @@ export async function getGoogleAuthUrl(): Promise<string> {
 /**
  * Exchanges Spotify code for access/refresh tokens and links to user.
  */
-export async function handleSpotifyCallback(code: string, state: string): Promise<string> {
+export async function handleSpotifyCallback(code: string, state: string, request?: NextRequest): Promise<string> {
   const cookieStore = await cookies();
   const savedState = cookieStore.get("spotify_auth_state")?.value;
   cookieStore.delete("spotify_auth_state");
@@ -91,7 +93,7 @@ export async function handleSpotifyCallback(code: string, state: string): Promis
 
   const clientId = process.env.SPOTIFY_CLIENT_ID || "";
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET || "";
-  const redirectUri = `${getAppBaseUrl()}/api/auth/spotify/callback`;
+  const redirectUri = `${getAppBaseUrl(request)}/api/auth/spotify/callback`;
   const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
   const tokenRes = await fetch("https://accounts.spotify.com/api/token", {
@@ -192,7 +194,7 @@ export async function handleSpotifyCallback(code: string, state: string): Promis
 /**
  * Exchanges Google code for access/refresh tokens and links to user.
  */
-export async function handleGoogleCallback(code: string, state: string): Promise<string> {
+export async function handleGoogleCallback(code: string, state: string, request?: NextRequest): Promise<string> {
   const cookieStore = await cookies();
   const savedState = cookieStore.get("google_auth_state")?.value;
   cookieStore.delete("google_auth_state");
@@ -203,7 +205,7 @@ export async function handleGoogleCallback(code: string, state: string): Promise
 
   const clientId = process.env.GOOGLE_CLIENT_ID || "";
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
-  const redirectUri = `${getAppBaseUrl()}/api/auth/google/callback`;
+  const redirectUri = `${getAppBaseUrl(request)}/api/auth/google/callback`;
 
   const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",

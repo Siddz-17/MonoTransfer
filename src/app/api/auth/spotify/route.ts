@@ -1,10 +1,10 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSpotifyAuthUrl } from "@/lib/auth-providers";
 import { handleRouteError } from "@/lib/api-handler";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const url = await getSpotifyAuthUrl();
+    const url = await getSpotifyAuthUrl(request);
     return NextResponse.redirect(url);
   } catch (error) {
     return handleRouteError(error);

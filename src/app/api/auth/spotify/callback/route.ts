@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(new URL("/?error=missing_oauth_params", request.url));
     }
 
-    await handleSpotifyCallback(code, state);
+    await handleSpotifyCallback(code, state, request);
     return NextResponse.redirect(new URL("/dashboard", request.url));
   } catch (err: any) {
     console.error("[Spotify Callback Error]", err);

@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(new URL("/?error=missing_oauth_params", request.url));
     }
 
-    await handleGoogleCallback(code, state);
+    await handleGoogleCallback(code, state, request);
     return NextResponse.redirect(new URL("/dashboard", request.url));
   } catch (err: any) {
     console.error("[Google Callback Error]", err);
