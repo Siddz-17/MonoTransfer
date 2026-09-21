@@ -36,13 +36,46 @@ interface YtMusicServiceResponse {
 }
 
 /**
+ * Warms up the ytmusic-service by polling /health until it responds or timeout.
+ * Render free-tier services spin down after inactivity and take 30-50s to cold start.
+ * Call this once at the start of a transfer before processing tracks.
+ */
+export async function warmupYtMusicService(
+  maxWaitMs = 60000,
+  retryIntervalMs = 3000
+): Promise<boolean> {
+  const healthUrl = `${YTMUSIC_SERVICE_URL}/health`;
+  const start = Date.now();
+  console.log(`[Matcher] Warming up ytmusic-service at ${healthUrl} (max ${maxWaitMs / 1000}s)...`);
+
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const res = await fetch(healthUrl, {
+        method: "GET",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        console.log(`[Matcher] ytmusic-service is ready (${Date.now() - start}ms)`);
+        return true;
+      }
+    } catch {
+      // still waking up, keep retrying
+    }
+    await new Promise((r) => setTimeout(r, retryIntervalMs));
+  }
+
+  console.warn(`[Matcher] ytmusic-service did not wake up within ${maxWaitMs / 1000}s — will use YouTube Data API fallback only.`);
+  return false;
+}
+
+/**
  * Searches the internal Python ytmusicapi microservice.
  */
 async function searchYtMusicService(query: string): Promise<Candidate[]> {
   const url = `${YTMUSIC_SERVICE_URL}/search?q=${encodeURIComponent(query)}&limit=10`;
   const res = await fetch(url, {
     method: "GET",
-    signal: AbortSignal.timeout(4500),
+    signal: AbortSignal.timeout(8000),
   });
 
   if (!res.ok) {
@@ -69,13 +102,13 @@ async function searchYtMusicService(query: string): Promise<Candidate[]> {
 /**
  * Global serialized queue for YouTube Data API search requests.
  * Prevents 429 (Too Many Requests) caused by 3 concurrent tracks all firing
- * YouTube API calls at the same moment. Enforces 1.2s between each request.
+ * YouTube API calls at the same moment. Enforces 2.5s between each request.
  */
 let ytDataApiQueue: Promise<void> = Promise.resolve();
 
 function queueYouTubeDataApiSearch<T>(operation: () => Promise<T>): Promise<T> {
   const next = ytDataApiQueue.then(async () => {
-    await new Promise((r) => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 2500)); // 2.5s gap prevents 429
     return operation();
   });
   ytDataApiQueue = next.then(
@@ -86,17 +119,24 @@ function queueYouTubeDataApiSearch<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Fallback search via YouTube Data API v3 (search.list).
- * Serialized to avoid 429s from concurrent track processing.
- * Retries once with 3s backoff on 429 before giving up.
+ * Fallback search via YouTube Data API v3 using the user's Google OAuth token.
+ *
+ * IMPORTANT: We use ONLY the user's OAuth token here, NOT an API key.
+ * Reason: The YouTube Data API quota (10,000 units/day) is per Google Cloud project.
+ * search.list costs 100 units — so an API key runs out after just 100 searches/day.
+ * OAuth tokens still share the project quota but avoids key-specific restrictions
+ * and provides proper authenticated access. If no OAuth token, skip this fallback.
+ *
+ * Serialized through queueYouTubeDataApiSearch to avoid 429 rate limiting.
+ * Retries once with 10s backoff on 429 before giving up.
  */
 async function searchYouTubeDataApi(
   query: string,
   sourceArtist: string,
   googleAccessToken?: string
 ): Promise<Candidate[]> {
-  const apiKey = process.env.YOUTUBE_API_KEY;
-  if (!apiKey && !googleAccessToken) {
+  // Only proceed if we have an OAuth token — skip API key to avoid shared quota drain
+  if (!googleAccessToken) {
     return [];
   }
 
@@ -106,14 +146,10 @@ async function searchYouTubeDataApi(
         await new Promise((r) => setTimeout(r, retryDelay));
       }
 
-      let endpoint = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&maxResults=8&q=${encodeURIComponent(query)}`;
-      const headers: Record<string, string> = {};
-
-      if (googleAccessToken) {
-        headers["Authorization"] = `Bearer ${googleAccessToken}`;
-      } else if (apiKey) {
-        endpoint += `&key=${apiKey}`;
-      }
+      const endpoint = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&maxResults=8&q=${encodeURIComponent(query)}`;
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${googleAccessToken}`,
+      };
 
       const res = await fetch(endpoint, {
         method: "GET",
@@ -124,8 +160,8 @@ async function searchYouTubeDataApi(
       if (!res.ok) {
         if (res.status === 429) {
           if (retryDelay === 0) {
-            console.warn(`[Matcher] YouTube Data API 429 for "${query}" — retrying in 3s`);
-            return makeRequest(3000);
+            console.warn(`[Matcher] YouTube Data API 429 for "${query}" — retrying in 10s`);
+            return makeRequest(10000);
           }
           throw new Error(`YouTube Data API returned 429: Too Many Requests (after retry)`);
         }

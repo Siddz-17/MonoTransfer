@@ -5,7 +5,7 @@ import { Worker, Job } from "bullmq";
 import { redis, createRedisClient } from "../lib/redis";
 import { prisma } from "../lib/prisma";
 import { TRANSFER_QUEUE_NAME } from "./queue";
-import { gatherCandidates } from "../lib/matcher/search";
+import { gatherCandidates, warmupYtMusicService } from "../lib/matcher/search";
 import { evaluateCandidates } from "../lib/matcher/scoring";
 import { getValidAccessToken } from "../lib/session";
 import { Provider, TransferStatus, ItemStatus } from "@prisma/client";
@@ -422,6 +422,9 @@ export const transferWorker = new Worker<TransferJobPayload>(
         data: { targetPlaylistId },
       });
     }
+
+    // Warm up the ytmusic-service before processing (handles Render free-tier cold starts)
+    await warmupYtMusicService(60000, 3000);
 
     // Fetch only PENDING items for idempotent resume
     const pendingItems = await prisma.transferItem.findMany({
