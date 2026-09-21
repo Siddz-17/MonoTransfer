@@ -52,7 +52,7 @@ services:
         fromService:
           type: web
           name: monotransfer-ytmusic
-          property: host
+          property: hostport
       - key: SESSION_SECRET
         generateValue: true
       - key: TOKEN_ENCRYPTION_KEY
@@ -64,4 +64,6 @@ services:
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: YOUTUBE_API_KEY
         sync: false

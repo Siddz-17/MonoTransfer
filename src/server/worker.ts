@@ -107,6 +107,12 @@ async function insertCandidateToPlaylist(
   let token = getCurrentToken();
 
   for (const candidate of candidates) {
+    // Guard: skip synthetic/mock video IDs — they always 404 on YouTube API
+    if (!candidate.videoId || candidate.videoId.startsWith("yt_mock_")) {
+      console.warn(`[Worker] Skipping mock/invalid videoId: ${candidate.videoId}`);
+      continue;
+    }
+
     let attempts = 0;
     const maxAttempts = 3;
 
@@ -201,6 +207,7 @@ export const transferWorker = new Worker<TransferJobPayload>(
   async (job: Job<TransferJobPayload>) => {
     const { transferId } = job.data;
     console.log(`[Worker] Started processing transfer: ${transferId}`);
+    console.log(`[Worker] ytmusic-service URL: ${process.env.YTMUSIC_SERVICE_URL || "(not set, defaulting to http://localhost:8000)"}`);
 
     const transfer = await prisma.transfer.findUnique({
       where: { id: transferId },
