@@ -1,0 +1,92 @@
+@import url('https://fonts.googleapis.com/css2?family=DotGothic16&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #FFFFFF;
+  --foreground: #000000;
+  --secondary: #7A7A7A;
+  --border: #DADADA;
+  --hover: #F7F7F7;
+  --card: #FFFFFF;
+  --card-foreground: #000000;
+  --muted: #F2F2F2;
+  --muted-foreground: #7A7A7A;
+  --font-dot: 'DotGothic16', monospace;
+  --font-inter: 'Inter', sans-serif;
+}
+
+.dark {
+  --background: #000000;
+  --foreground: #FFFFFF;
+  --secondary: #8A8A8A;
+  --border: #2A2A2A;
+  --hover: #141414;
+  --card: #050505;
+  --card-foreground: #FFFFFF;
+  --muted: #1A1A1A;
+  --muted-foreground: #8A8A8A;
+}
+
+* {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  letter-spacing: -0.01em;
+}
+
+/* Nothing OS Dot matrix typography styling */
+.font-dot {
+  font-family: var(--font-dot);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+.font-mono-code {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Industrial dot matrix grid background subtle accent */
+.bg-dot-matrix {
+  background-image: radial-gradient(rgba(128, 128, 128, 0.22) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+/* Custom industrial scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--secondary);
+}
+
+/* High-contrast focus state */
+:focus-visible {
+  outline: 2px solid var(--foreground) !important;
+  outline-offset: 2px !important;
+}
+
+/* Inverted contrast highlight */
+::selection {
+  background-color: var(--foreground);
+  color: var(--background);
+}

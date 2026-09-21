@@ -1,0 +1,221 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Provider {
+  SPOTIFY
+  GOOGLE
+}
+
+enum TransferMode {
+  NEW
+  EXISTING
+}
+
+enum TransferStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ItemStatus {
+  PENDING
+  MATCHED
+  FAILED
+  SKIPPED
+  MANUAL
+}
+
+enum AuditAction {
+  CONNECT
+  DISCONNECT
+  TOKEN_REFRESHED
+  TRANSFER_CREATED
+  TRANSFER_CANCELLED
+  MANUAL_OVERRIDE
+  ACCOUNT_DELETED
+}
+
+model User {
+  id           String              @id @default(cuid())
+  email        String?             @unique
+  name         String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  connections  Connection[]
+  playlists    Playlist[]
+  transfers    Transfer[]
+  preference   TransferPreference?
+  auditLogs    AuditLog[]
+}
+
+model Connection {
+  id              String   @id @default(cuid())
+  userId          String
+  provider        Provider
+  providerUserId  String?
+  accessTokenEnc  String
+  refreshTokenEnc String?
+  iv              String
+  authTag         String
+  expiresAt       DateTime
+  scope           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+model Playlist {
+  id          String          @id @default(cuid())
+  userId      String
+  spotifyId   String
+  name        String
+  description String?
+  imageUrl    String?
+  trackCount  Int             @default(0)
+  snapshotId  String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tracks      PlaylistTrack[]
+  transfers   Transfer[]
+
+  @@unique([userId, spotifyId])
+  @@index([userId])
+}
+
+model PlaylistTrack {
+  id             String   @id @default(cuid())
+  playlistId     String
+  spotifyTrackId String
+  title          String
+  artist         String
+  album          String?
+  durationMs     Int      @default(0)
+  isExplicit     Boolean  @default(false)
+  position       Int      @default(0)
+  createdAt      DateTime @default(now())
+  playlist       Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  @@index([playlistId])
+  @@index([spotifyTrackId])
+}
+
+model Transfer {
+  id                         String         @id @default(cuid())
+  userId                     String
+  sourcePlaylistId           String?
+  targetPlaylistId           String?
+  targetPlaylistName         String
+  mode                       TransferMode   @default(NEW)
+  skipDuplicates             Boolean        @default(true)
+  retryFailedMatches         Boolean        @default(true)
+  matchExplicitVersions      Boolean        @default(true)
+  matchLiveVersions          Boolean        @default(false)
+  privatePlaylist            Boolean        @default(true)
+  minimumConfidenceThreshold Float          @default(0.72)
+  status                     TransferStatus @default(PENDING)
+  totalTracks                Int            @default(0)
+  matchedCount               Int            @default(0)
+  failedCount                Int            @default(0)
+  skippedCount               Int            @default(0)
+  currentTrackTitle          String?
+  error                      String?
+  startedAt                  DateTime?
+  completedAt                DateTime?
+  createdAt                  DateTime       @default(now())
+  updatedAt                  DateTime       @updatedAt
+  user                       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourcePlaylist             Playlist?      @relation(fields: [sourcePlaylistId], references: [id], onDelete: SetNull)
+  items                      TransferItem[]
+  failedMatches              FailedMatch[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model TransferItem {
+  id                String       @id @default(cuid())
+  transferId        String
+  sourceTrackId     String?
+  title             String
+  artist            String
+  album             String?
+  durationMs        Int          @default(0)
+  isExplicit        Boolean      @default(false)
+  status            ItemStatus   @default(PENDING)
+  targetVideoId     String?
+  targetTitle       String?
+  targetArtist      String?
+  confidenceScore   Float?
+  topCandidatesJson String?
+  resolvedAt        DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  transfer          Transfer     @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  failedMatch       FailedMatch?
+
+  @@index([transferId])
+  @@index([status])
+}
+
+model FailedMatch {
+  id                      String        @id @default(cuid())
+  transferId              String
+  transferItemId          String        @unique
+  title                   String
+  artist                  String
+  album                   String?
+  durationMs              Int           @default(0)
+  isExplicit              Boolean       @default(false)
+  suggestedCandidatesJson String?
+  resolved                Boolean       @default(false)
+  resolvedVideoId         String?
+  resolvedTitle           String?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+  transfer                Transfer      @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  transferItem            TransferItem  @relation(fields: [transferItemId], references: [id], onDelete: Cascade)
+
+  @@index([transferId])
+  @@index([resolved])
+}
+
+model TransferPreference {
+  id                         String   @id @default(cuid())
+  userId                     String   @unique
+  skipDuplicates             Boolean  @default(true)
+  retryFailedMatches         Boolean  @default(true)
+  matchExplicitVersions      Boolean  @default(true)
+  matchLiveVersions          Boolean  @default(false)
+  privatePlaylist            Boolean  @default(true)
+  minimumConfidenceThreshold Float    @default(0.72)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+  user                       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id        String      @id @default(cuid())
+  userId    String?
+  action    AuditAction
+  metadata  String?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime    @default(now())
+  user      User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}

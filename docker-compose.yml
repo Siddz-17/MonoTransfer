@@ -1,0 +1,124 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: monotransfer-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-monotransfer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-monopassword123}
+      POSTGRES_DB: ${POSTGRES_DB:-monotransfer}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monotransfer"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: monotransfer-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ytmusic-service:
+    build:
+      context: ./ytmusic-service
+      dockerfile: Dockerfile
+    container_name: monotransfer-ytmusic-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: monotransfer-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-monotransfer}:${POSTGRES_PASSWORD:-monopassword123}@postgres:5432/${POSTGRES_DB:-monotransfer}
+      - REDIS_URL=redis://redis:6379
+      - YTMUSIC_SERVICE_URL=http://ytmusic-service:8000
+      - WS_PORT=3001
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ytmusic-service:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: monotransfer-worker
+    restart: unless-stopped
+    command: ["npm", "run", "worker"]
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-monotransfer}:${POSTGRES_PASSWORD:-monopassword123}@postgres:5432/${POSTGRES_DB:-monotransfer}
+      - REDIS_URL=redis://redis:6379
+      - YTMUSIC_SERVICE_URL=http://ytmusic-service:8000
+      - SESSION_SECRET=${SESSION_SECRET}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ytmusic-service:
+        condition: service_healthy
+
+  ws:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: monotransfer-ws
+    restart: unless-stopped
+    command: ["npm", "run", "ws"]
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-monotransfer}:${POSTGRES_PASSWORD:-monopassword123}@postgres:5432/${POSTGRES_DB:-monotransfer}
+      - REDIS_URL=redis://redis:6379
+      - WS_PORT=3001
+      - SESSION_SECRET=${SESSION_SECRET}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
