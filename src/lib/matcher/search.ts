@@ -1,4 +1,5 @@
 import { Candidate, TrackInput } from "./scoring";
+import { normalizeTitle, normalizeArtist } from "./similarity";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Direct YouTube Music Internal API
@@ -231,39 +232,67 @@ export async function gatherCandidates(
     }
   }
 
-  // 2. Primary: artist + title (songs filter)
-  const query = `${track.artist} ${track.title}`.trim();
+  // 2. Primary: Full artist + full title (songs filter)
+  const fullQuery = `${track.artist} ${track.title}`.trim();
   try {
-    const primary = await searchYouTubeMusicDirect(query, true, 10);
+    const primary = await searchYouTubeMusicDirect(fullQuery, true, 10);
     addUnique(primary);
   } catch (err: any) {
-    console.warn(`[Matcher] YTM search failed for "${query}": ${err.message}`);
+    console.warn(`[Matcher] YTM search failed for "${fullQuery}": ${err.message}`);
   }
 
-  // 3. General search if no official results yet
-  const hasOfficial = allCandidates.some((c) => c.isOfficialChannel || c.isSong);
-  if (!hasOfficial && track.artist) {
+  // 3. Fallback 1: First main artist + full title (strips noisy extra feat/artist lists)
+  const mainArtist = track.artist ? track.artist.split(/[,;&]/)[0].trim() : "";
+  if (allCandidates.length === 0 && mainArtist && mainArtist !== track.artist) {
+    const mainArtistQuery = `${mainArtist} ${track.title}`.trim();
     try {
-      const general = await searchYouTubeMusicDirect(query, false, 8);
+      const secondary = await searchYouTubeMusicDirect(mainArtistQuery, true, 8);
+      addUnique(secondary);
+    } catch { }
+  }
+
+  // 4. Fallback 2: Main artist + normalized title (strips remastered/edition/movie noise)
+  const cleanTitle = normalizeTitle(track.title);
+  if (allCandidates.length === 0 && cleanTitle) {
+    const cleanQuery = `${mainArtist || track.artist} ${cleanTitle}`.trim();
+    try {
+      const tertiary = await searchYouTubeMusicDirect(cleanQuery, true, 8);
+      addUnique(tertiary);
+    } catch { }
+  }
+
+  // 5. Fallback 3: Clean title alone (songs filter)
+  if (allCandidates.length === 0 && cleanTitle) {
+    try {
+      const titleOnly = await searchYouTubeMusicDirect(cleanTitle, true, 8);
+      addUnique(titleOnly);
+    } catch { }
+  }
+
+  // 6. General search without songs filter if no official releases found yet
+  const hasOfficial = allCandidates.some((c) => c.isOfficialChannel || c.isSong);
+  if (!hasOfficial && (cleanTitle || fullQuery)) {
+    try {
+      const general = await searchYouTubeMusicDirect(cleanTitle || fullQuery, false, 8);
       addUnique(general);
     } catch { }
   }
 
   if (allCandidates.length > 0) return allCandidates;
 
-  // 4. YouTube Data API v3 last-resort fallback
+  // 7. YouTube Data API v3 last-resort fallback
   try {
-    const fallback = await searchYouTubeDataApi(query, track.artist, options?.googleAccessToken);
+    const fallback = await searchYouTubeDataApi(cleanTitle || fullQuery, track.artist, options?.googleAccessToken);
     addUnique(fallback);
     if (allCandidates.length > 0) {
-      console.log(`[Matcher] YT Data API fallback used for "${query}"`);
+      console.log(`[Matcher] YT Data API fallback used for "${fullQuery}"`);
       return allCandidates;
     }
   } catch (err: any) {
     if (err.name === "YouTubeQuotaError") throw err;
-    console.warn(`[Matcher] YT Data API fallback failed for "${query}": ${err.message}`);
+    console.warn(`[Matcher] YT Data API fallback failed for "${fullQuery}": ${err.message}`);
   }
 
-  console.warn(`[Matcher] No candidates found for "${query}"`);
+  console.warn(`[Matcher] No candidates found for "${fullQuery}"`);
   return [];
 }
