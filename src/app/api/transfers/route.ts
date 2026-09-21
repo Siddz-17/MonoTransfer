@@ -3,7 +3,7 @@ import { requireSession } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { handleRouteError } from "@/lib/api-handler";
 import { enqueueTransferJob } from "@/server/queue";
-import { TransferMode, TransferStatus, ItemStatus, AuditAction } from "@prisma/client";
+import { TransferMode, TransferStatus, ItemStatus, AuditAction, Provider } from "@prisma/client";
 import { syncSpotifyPlaylistTracks } from "@/lib/spotify-tracks";
 import { syncSpotifyLikedSongs } from "@/lib/spotify-liked";
 
@@ -69,6 +69,22 @@ export async function POST(request: NextRequest) {
 
     // Handle Bi-Directional Transfer: YouTube Music -> Spotify
     if (direction === "YTMUSIC_TO_SPOTIFY") {
+      const spotifyConn = await prisma.connection.findUnique({
+        where: {
+          userId_provider: {
+            userId: session.userId,
+            provider: Provider.SPOTIFY,
+          },
+        },
+      });
+
+      if (!spotifyConn) {
+        return NextResponse.json(
+          { error: "SPOTIFY_NOT_CONNECTED: Please connect your Spotify account before migrating tracks to Spotify." },
+          { status: 400 }
+        );
+      }
+
       let ytTracks: any[] = [];
       try {
         const origin = new URL(request.url).origin;
@@ -130,6 +146,22 @@ export async function POST(request: NextRequest) {
     }
 
     // Direction: Spotify -> YouTube Music
+    const googleConn = await prisma.connection.findUnique({
+      where: {
+        userId_provider: {
+          userId: session.userId,
+          provider: Provider.GOOGLE,
+        },
+      },
+    });
+
+    if (!googleConn) {
+      return NextResponse.json(
+        { error: "GOOGLE_NOT_CONNECTED: Your Google / YouTube Music account is not connected. Please connect Google in Settings before starting a transfer to YouTube Music." },
+        { status: 400 }
+      );
+    }
+
     let playlist = await prisma.playlist.findFirst({
       where: {
         OR: [

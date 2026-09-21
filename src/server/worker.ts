@@ -52,15 +52,18 @@ async function createYouTubePlaylist(
   });
 
   if (!res.ok) {
-    if (res.status === 403) {
-      const txt = await res.text();
-      if (txt.includes("quotaExceeded")) {
-        const err = new Error("YouTubeQuotaError: YouTube quota exceeded");
-        err.name = "YouTubeQuotaError";
-        throw err;
-      }
+    const txt = await res.text().catch(() => "");
+    if (res.status === 403 && txt.includes("quotaExceeded")) {
+      const err = new Error("YouTubeQuotaError: YouTube quota exceeded");
+      err.name = "YouTubeQuotaError";
+      throw err;
     }
-    throw new Error(`Failed to create YouTube playlist (${res.status}): ${res.statusText}`);
+    if (txt.includes("youtubeSignupRequired") || txt.includes("channelNotFound")) {
+      const err = new Error("YOUTUBE_CHANNEL_REQUIRED: Your Google account does not have a YouTube Channel handle created yet. Please visit youtube.com to complete the one-time channel setup, then retry.");
+      err.name = "YouTubeChannelRequired";
+      throw err;
+    }
+    throw new Error(`Failed to create YouTube playlist (${res.status}): ${txt || res.statusText}`);
   }
 
   const data = await res.json();
@@ -283,34 +286,60 @@ export const transferWorker = new Worker<TransferJobPayload>(
     // -------------------------------------------------------------
     // Direction: Spotify -> YouTube Music
     // -------------------------------------------------------------
-    // Obtain valid Google access token if connected
+    // Obtain valid Google access token
     let googleAccessToken: string | undefined = undefined;
     try {
       googleAccessToken = await getValidAccessToken(transfer.userId, Provider.GOOGLE);
     } catch (err: any) {
-      console.warn(`[Worker] Google access token not available for user ${transfer.userId} (${err.message}). Continuing in sandbox/mock sync mode.`);
+      console.warn(`[Worker] Google access token not available for user ${transfer.userId}:`, err.message);
+    }
+
+    if (!googleAccessToken) {
+      const errMsg = "Google / YouTube Music account is not connected. Please connect Google in Settings before migrating.";
+      console.error(`[Worker] Transfer ${transferId} aborted: ${errMsg}`);
+      await prisma.transfer.update({
+        where: { id: transferId },
+        data: {
+          status: TransferStatus.FAILED,
+          completedAt: new Date(),
+        },
+      });
+      await broadcastProgress(transferId, {
+        transferId,
+        status: TransferStatus.FAILED,
+        errorMessage: errMsg,
+      });
+      return;
     }
 
     // Ensure target YouTube playlist exists
     let targetPlaylistId = transfer.targetPlaylistId;
     if (!targetPlaylistId) {
-      if (googleAccessToken) {
-        try {
-          targetPlaylistId = await createYouTubePlaylist(
-            googleAccessToken,
-            transfer.targetPlaylistName || "Transferred Playlist",
-            "Monochromatic playlist migration from Spotify.",
-            transfer.privatePlaylist
-          );
-        } catch (err: any) {
-          if (err.name === "YouTubeQuotaError") {
-            throw err; // Re-throw to BullMQ backoff retry
-          }
-          console.warn(`[Worker] Could not create YouTube playlist: ${err.message}. Using synthetic ID.`);
-          targetPlaylistId = `yt_pl_${transferId.slice(0, 8)}`;
+      try {
+        targetPlaylistId = await createYouTubePlaylist(
+          googleAccessToken,
+          transfer.targetPlaylistName || "Transferred Playlist",
+          "Monochromatic playlist migration from Spotify.",
+          transfer.privatePlaylist
+        );
+      } catch (err: any) {
+        if (err.name === "YouTubeQuotaError") {
+          throw err; // Re-throw to BullMQ backoff retry
         }
-      } else {
-        targetPlaylistId = `yt_pl_${transferId.slice(0, 8)}`;
+        console.error(`[Worker] Could not create YouTube playlist: ${err.message}`);
+        await prisma.transfer.update({
+          where: { id: transferId },
+          data: {
+            status: TransferStatus.FAILED,
+            completedAt: new Date(),
+          },
+        });
+        await broadcastProgress(transferId, {
+          transferId,
+          status: TransferStatus.FAILED,
+          errorMessage: err.message,
+        });
+        return;
       }
 
       await prisma.transfer.update({

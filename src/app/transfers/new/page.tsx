@@ -36,10 +36,13 @@ function TransferConfigurationForm() {
   const [privatePlaylist, setPrivatePlaylist] = useState(true);
   const [minConfidence, setMinConfidence] = useState(0.72);
 
+  const [session, setSession] = useState<any>(null);
+
   useEffect(() => {
     async function loadData() {
       try {
         const fetchPromises: Promise<any>[] = [
+          fetch("/api/auth/session"),
           fetch("/api/settings/preferences"),
           fetch("/api/youtube/playlists"),
         ];
@@ -48,7 +51,12 @@ function TransferConfigurationForm() {
           fetchPromises.push(fetch(`/api/playlists/${playlistId}`));
         }
 
-        const [prefRes, ytRes, plRes] = await Promise.all(fetchPromises);
+        const [sessRes, prefRes, ytRes, plRes] = await Promise.all(fetchPromises);
+
+        if (sessRes && sessRes.ok) {
+          const sData = await sessRes.json();
+          setSession(sData);
+        }
 
         if (plRes && plRes.ok) {
           const plData = await plRes.json();
@@ -278,6 +286,49 @@ function TransferConfigurationForm() {
                   // DESTINATION CONFIGURATION ({direction === "SPOTIFY_TO_YTMUSIC" ? "YOUTUBE MUSIC" : "SPOTIFY"})
                 </span>
 
+                {/* Connection Status Warning */}
+                {direction === "SPOTIFY_TO_YTMUSIC" && session && !session.connections?.google && (
+                  <div className="border border-foreground p-5 bg-background font-mono text-xs space-y-3">
+                    <div className="flex items-center gap-2 font-bold uppercase text-foreground">
+                      <span className="w-2 h-2 rounded-full bg-foreground" />
+                      <span>GOOGLE / YOUTUBE MUSIC IS NOT CONNECTED</span>
+                    </div>
+                    <p className="text-secondary leading-relaxed text-[11px]">
+                      Your Google account is currently unlinked. To allow MonoTransfer to create playlists and add songs directly into your YouTube Music library, you must connect your Google account before starting.
+                    </p>
+                    <div className="pt-1">
+                      <a
+                        href="/api/auth/google"
+                        className="inline-flex items-center gap-2 px-4 py-2 border border-foreground bg-foreground text-background font-bold text-xs uppercase hover:bg-background hover:text-foreground transition-all"
+                      >
+                        <span>CONNECT GOOGLE NOW</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  </div>
+                )}
+
+                {direction === "YTMUSIC_TO_SPOTIFY" && session && !session.connections?.spotify && (
+                  <div className="border border-foreground p-5 bg-background font-mono text-xs space-y-3">
+                    <div className="flex items-center gap-2 font-bold uppercase text-foreground">
+                      <span className="w-2 h-2 rounded-full bg-foreground" />
+                      <span>SPOTIFY IS NOT CONNECTED</span>
+                    </div>
+                    <p className="text-secondary leading-relaxed text-[11px]">
+                      Your Spotify account is unlinked. Connect Spotify so MonoTransfer can write playlists to your Spotify library.
+                    </p>
+                    <div className="pt-1">
+                      <a
+                        href="/api/auth/spotify"
+                        className="inline-flex items-center gap-2 px-4 py-2 border border-foreground bg-foreground text-background font-bold text-xs uppercase hover:bg-background hover:text-foreground transition-all"
+                      >
+                        <span>CONNECT SPOTIFY NOW</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-2 font-mono">
                   <label className="text-xs uppercase tracking-wider text-secondary block font-semibold">
                     TARGET PLAYLIST TITLE
@@ -374,10 +425,22 @@ function TransferConfigurationForm() {
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={
+                    submitting ||
+                    (direction === "SPOTIFY_TO_YTMUSIC" && !session?.connections?.google) ||
+                    (direction === "YTMUSIC_TO_SPOTIFY" && !session?.connections?.spotify)
+                  }
                   className="inline-flex items-center gap-3 px-8 py-4 border border-foreground bg-foreground text-background hover:bg-background hover:text-foreground font-mono text-xs font-bold tracking-widest uppercase transition-all disabled:opacity-50"
                 >
-                  <span>{submitting ? "INITIALIZING PIPELINE..." : "LAUNCH MIGRATION"}</span>
+                  <span>
+                    {direction === "SPOTIFY_TO_YTMUSIC" && !session?.connections?.google
+                      ? "CONNECT GOOGLE TO LAUNCH"
+                      : direction === "YTMUSIC_TO_SPOTIFY" && !session?.connections?.spotify
+                      ? "CONNECT SPOTIFY TO LAUNCH"
+                      : submitting
+                      ? "INITIALIZING PIPELINE..."
+                      : "LAUNCH MIGRATION"}
+                  </span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
