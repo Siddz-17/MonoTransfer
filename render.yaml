@@ -52,7 +52,7 @@ services:
         fromService:
           type: web
           name: monotransfer-ytmusic
-          property: hostport
+          property: host
       - key: SESSION_SECRET
         generateValue: true
       - key: TOKEN_ENCRYPTION_KEY

@@ -1,14 +1,19 @@
 import { Candidate, TrackInput } from "./scoring";
 
 /**
- * Sanitize the ytmusic service URL: ensure it has a http:// or https:// scheme.
- * On Render, internal service names like "monotransfer-ytmusic" are sometimes set
- * without a protocol prefix, causing "Failed to parse URL" errors at runtime.
+ * Sanitize the ytmusic service URL: ensure it has a correct scheme.
+ * - On Render, `property: host` returns a bare hostname like `monotransfer-ytmusic.onrender.com`
+ *   which needs https://
+ * - Internal hostnames like `monotransfer-ytmusic:10000` need http://
+ * - Already-complete URLs are left as-is.
  */
 function sanitizeServiceUrl(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return "http://localhost:8000";
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  // Render public hostnames need https://
+  if (trimmed.includes(".onrender.com")) return `https://${trimmed}`;
+  // Internal hostnames (e.g. monotransfer-ytmusic:10000) use http://
   return `http://${trimmed}`;
 }
 
@@ -41,8 +46,8 @@ interface YtMusicServiceResponse {
  * Call this once at the start of a transfer before processing tracks.
  */
 export async function warmupYtMusicService(
-  maxWaitMs = 60000,
-  retryIntervalMs = 3000
+  maxWaitMs = 120000,
+  retryIntervalMs = 4000
 ): Promise<boolean> {
   const healthUrl = `${YTMUSIC_SERVICE_URL}/health`;
   const start = Date.now();
@@ -52,15 +57,21 @@ export async function warmupYtMusicService(
     try {
       const res = await fetch(healthUrl, {
         method: "GET",
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(6000),
       });
       if (res.ok) {
-        console.log(`[Matcher] ytmusic-service is ready (${Date.now() - start}ms)`);
-        return true;
+        // Confirm it's actually our service (not Render's spin-up page)
+        const body = await res.text().catch(() => "");
+        if (body.includes("ytmusic-service") || body.includes("ok")) {
+          console.log(`[Matcher] ytmusic-service is ready (${Date.now() - start}ms)`);
+          return true;
+        }
       }
     } catch {
       // still waking up, keep retrying
     }
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    console.log(`[Matcher] ytmusic-service not ready yet (${elapsed}s elapsed), retrying...`);
     await new Promise((r) => setTimeout(r, retryIntervalMs));
   }
 
