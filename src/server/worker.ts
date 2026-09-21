@@ -77,8 +77,8 @@ let playlistWriteLock: Promise<void> = Promise.resolve();
  */
 function queueYouTubePlaylistInsert<T>(operation: () => Promise<T>): Promise<T> {
   const next = playlistWriteLock.then(async () => {
-    // 350ms spacing between YouTube writes ensures no rateLimitExceeded or 409 Conflict
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    // 750ms spacing between YouTube writes prevents 409 SERVICE_UNAVAILABLE / ABORTED conflicts
+    await new Promise((resolve) => setTimeout(resolve, 750));
     return operation();
   });
   playlistWriteLock = next.then(
@@ -114,7 +114,7 @@ async function insertCandidateToPlaylist(
     }
 
     let attempts = 0;
-    const maxAttempts = 3;
+    const maxAttempts = 5;
 
     while (attempts < maxAttempts) {
       attempts++;
@@ -141,7 +141,7 @@ async function insertCandidateToPlaylist(
         }
 
         const errText = await res.text().catch(() => "");
-        console.warn(`[Worker] Insert attempt ${attempts} for ${candidate.videoId} (${res.status}): ${errText}`);
+        console.warn(`[Worker] Insert attempt ${attempts}/${maxAttempts} for ${candidate.videoId} (${res.status}): ${errText}`);
 
         if (res.status === 401) {
           // Token expired, refresh and retry
@@ -162,8 +162,11 @@ async function insertCandidateToPlaylist(
         }
 
         if (res.status === 409 || res.status === 429 || res.status >= 500) {
-          // Resource conflict or rate limit: wait and retry with exponential backoff
-          await new Promise((r) => setTimeout(r, 600 * attempts));
+          // Resource conflict (YouTube ABORTED/SERVICE_UNAVAILABLE) or rate limit:
+          // Retry with exponential backoff (1s, 2s, 4s, 8s)
+          const backoffMs = Math.min(8000, 1000 * Math.pow(2, attempts - 1));
+          console.log(`[Worker] 409/429 conflict encountered. Retrying attempt ${attempts + 1} in ${backoffMs}ms...`);
+          await new Promise((r) => setTimeout(r, backoffMs));
           continue;
         }
 
@@ -172,7 +175,7 @@ async function insertCandidateToPlaylist(
       } catch (err: any) {
         if (err.name === "YouTubeQuotaError") throw err;
         console.warn(`[Worker] Insert network error on ${candidate.videoId}:`, err.message);
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 1000));
       }
     }
   }

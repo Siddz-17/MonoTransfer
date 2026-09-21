@@ -4,13 +4,46 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from ytmusicapi import YTMusic
 
+import threading
+
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ytmusic-service")
 
-app = FastAPI(title="MonoTransfer YTMusic Search Microservice", version="1.0.0")
+app = FastAPI(title="MonoTransfer YTMusic Search Microservice", version="1.1.0")
 
-# Read-only public catalog search - no auth required
-ytmusic = None
+# Public catalog search does not require a YouTube Music login.
+ytmusic: Optional[YTMusic] = None
+
+# ytmusicapi uses a shared HTTP session internally. Serialize searches so
+# concurrent tracks from the Node worker do not hammer the same client/session.
+search_lock = threading.Lock()  
+
+def _search_ytmusic(query: str, limit: int):
+    """Run catalog search with a safe songs->general fallback."""
+    global ytmusic
+
+    if ytmusic is None:
+        ytmusic = YTMusic()
+
+    # Prefer the clean song catalog. If that request itself fails, try the
+    # general search instead of abandoning the track.
+    try:
+        results = ytmusic.search(query=query, filter="songs", limit=limit)
+        if results:
+            return results, True
+    except Exception:
+        logger.exception(
+            "YTMusic songs search failed for %r; trying general search",
+            query
+        )
+
+    try:
+        results = ytmusic.search(query=query, limit=limit)
+        return results or [], False
+    except Exception:
+        logger.exception("YTMusic general search failed for %r", query)
+        raise
 
 @app.on_event("startup")
 def startup_event():
@@ -18,8 +51,9 @@ def startup_event():
     try:
         ytmusic = YTMusic()
         logger.info("Initialized ytmusicapi client successfully (public catalog mode)")
-    except Exception as e:
-        logger.error(f"Failed to initialize ytmusicapi client: {e}")
+    except Exception:
+        logger.exception("Failed to initialize ytmusicapi client")
+        ytmusic = None
 
 class CandidateTrack(BaseModel):
     videoId: str
@@ -54,7 +88,11 @@ def parse_duration_to_seconds(dur_str: Optional[str]) -> Optional[int]:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "ytmusic-service"}
+    return {
+        "status": "ok" if ytmusic is not None else "degraded",
+        "service": "ytmusic-service",
+        "ytmusic_ready": ytmusic is not None,
+    }
 
 @app.get("/search", response_model=SearchResponse)
 def search_catalog(
@@ -72,7 +110,8 @@ def search_catalog(
     try:
         # 1. Search songs filter first for cleanest official metadata
         is_song_filter = True
-        results = ytmusic.search(query=q, filter="songs", limit=limit)
+        with search_lock:
+            results, is_song_filter = _search_ytmusic(q, limit)
         
         # 2. If no results, fallback to general search
         if not results or len(results) == 0:
