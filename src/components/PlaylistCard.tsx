@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Disc3, ArrowRight } from "lucide-react";
+import { Disc3, ArrowRight, Heart } from "lucide-react";
 
 interface PlaylistCardProps {
   id: string;
@@ -12,17 +12,26 @@ interface PlaylistCardProps {
 }
 
 export function PlaylistCard({ id, name, description, trackCount, imageUrl }: PlaylistCardProps) {
+  const isLikedSongs = id === "liked_songs" || name.toLowerCase() === "liked songs";
+
   return (
-    <div className="border border-border p-6 flex flex-col justify-between hover:border-foreground transition-all duration-150 group bg-background relative">
+    <div className={`border p-6 flex flex-col justify-between transition-all duration-150 group bg-background relative ${
+      isLikedSongs ? "border-foreground bg-foreground/5 shadow-sm" : "border-border hover:border-foreground"
+    }`}>
       <div className="space-y-4">
         <div className="flex items-start justify-between gap-4">
           <Link
             href={`/playlists/${id}`}
             className="w-10 h-10 border border-border flex items-center justify-center shrink-0 group-hover:border-foreground group-hover:bg-foreground group-hover:text-background transition-colors"
           >
-            <Disc3 className="w-5 h-5" />
+            {isLikedSongs ? <Heart className="w-5 h-5 fill-current" /> : <Disc3 className="w-5 h-5" />}
           </Link>
-          <div className="text-right">
+          <div className="text-right flex items-center gap-2">
+            {isLikedSongs && (
+              <span className="text-[10px] font-mono font-bold tracking-widest uppercase bg-foreground text-background px-1.5 py-0.5">
+                FAVORITES
+              </span>
+            )}
             <span className="text-xs font-mono font-bold tracking-widest uppercase border border-border px-2 py-0.5">
               {trackCount} {trackCount === 1 ? "TRACK" : "TRACKS"}
             </span>
@@ -36,7 +45,7 @@ export function PlaylistCard({ id, name, description, trackCount, imageUrl }: Pl
             </h3>
           </Link>
           <p className="text-xs font-mono text-secondary mt-1 line-clamp-2 leading-relaxed">
-            {description || "No description provided."}
+            {isLikedSongs ? "Your complete saved tracks library from Spotify." : (description || "No description provided.")}
           </p>
         </div>
       </div>

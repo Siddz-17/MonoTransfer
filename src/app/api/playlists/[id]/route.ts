@@ -3,6 +3,7 @@ import { requireSession } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { handleRouteError } from "@/lib/api-handler";
 import { syncSpotifyPlaylistTracks } from "@/lib/spotify-tracks";
+import { syncSpotifyLikedSongs } from "@/lib/spotify-liked";
 
 export async function GET(
   request: NextRequest,
@@ -28,6 +29,14 @@ export async function GET(
       },
     });
 
+    if (!playlist && id === "liked_songs") {
+      await syncSpotifyLikedSongs(session.userId, true);
+      playlist = await prisma.playlist.findFirst({
+        where: { spotifyId: "liked_songs", userId: session.userId },
+        include: { tracks: { orderBy: { position: "asc" } } },
+      });
+    }
+
     if (!playlist) {
       return NextResponse.json({ error: "Playlist not found" }, { status: 404 });
     }
@@ -36,12 +45,14 @@ export async function GET(
 
     // Sync tracks from Spotify if tracks are empty or forceSync is true
     if ((playlist.tracks.length === 0 || forceSync) && playlist.spotifyId) {
-      const syncResult = await syncSpotifyPlaylistTracks(
-        session.userId,
-        playlist.id,
-        playlist.spotifyId,
-        forceSync
-      );
+      const syncResult = playlist.spotifyId === "liked_songs"
+        ? await syncSpotifyLikedSongs(session.userId, forceSync)
+        : await syncSpotifyPlaylistTracks(
+            session.userId,
+            playlist.id,
+            playlist.spotifyId,
+            forceSync
+          );
 
       if (syncResult.success) {
         playlist = await prisma.playlist.findFirst({

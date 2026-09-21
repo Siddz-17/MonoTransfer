@@ -265,11 +265,40 @@ export default function FailedMatchesPage() {
                       </div>
                     </div>
 
+                    {/* Artist Mismatch Alert & Smart Suggestion */}
+                    {!item.resolved && item.suggestedMatch && (
+                      <div className="border border-foreground bg-foreground/5 p-4 font-mono text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-[11px] uppercase tracking-wider text-foreground">
+                              ⚠ ARTIST MISMATCH DETECTED
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-secondary">
+                            Discovered verified artist channel release:{" "}
+                            <span className="text-foreground font-semibold">
+                              {item.suggestedMatch.channelTitle || (Array.isArray(item.suggestedMatch.artists) ? item.suggestedMatch.artists.join(", ") : item.suggestedMatch.artist)}
+                            </span>
+                            {" "}({item.suggestedMatch.title})
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => handleManualSelect(item.id, item.suggestedMatch)}
+                            disabled={actionInProgress === item.id}
+                            className="px-3.5 py-1.5 border border-foreground bg-foreground text-background hover:bg-background hover:text-foreground font-bold text-[11px] uppercase tracking-wider transition-all disabled:opacity-50"
+                          >
+                            USE SUGGESTED
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Candidate Suggestions */}
                     {!item.resolved && (
                       <div className="space-y-3">
                         <span className="text-[11px] text-secondary tracking-widest uppercase block">
-                          SUGGESTED CANDIDATES (SCORED BY DICE SIMILARITY & DURATION):
+                          SUGGESTED CANDIDATES (PRIORITIZING OFFICIAL ARTIST CHANNELS & ISRC):
                         </span>
 
                         {candidates.length === 0 ? (
@@ -285,9 +314,21 @@ export default function FailedMatchesPage() {
                               >
                                 <div className="space-y-1">
                                   <div className="flex items-center justify-between gap-2">
-                                    <span className="text-[10px] text-secondary uppercase">
-                                      CONFIDENCE: {cand.confidenceScore ? `${(cand.confidenceScore * 100).toFixed(0)}%` : "N/A"}
-                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10px] text-secondary uppercase">
+                                        CONFIDENCE: {cand.confidenceScore ? `${(cand.confidenceScore * 100).toFixed(0)}%` : "N/A"}
+                                      </span>
+                                      {cand.isOfficialChannel && (
+                                        <span className="text-[9px] font-mono font-bold tracking-widest uppercase bg-foreground text-background px-1">
+                                          OFFICIAL
+                                        </span>
+                                      )}
+                                      {cand.isIsrcMatch && (
+                                        <span className="text-[9px] font-mono font-bold tracking-widest uppercase border border-foreground px-1">
+                                          ISRC
+                                        </span>
+                                      )}
+                                    </div>
                                     <a
                                       href={`https://music.youtube.com/watch?v=${cand.videoId}`}
                                       target="_blank"
@@ -302,7 +343,7 @@ export default function FailedMatchesPage() {
                                     {cand.title}
                                   </p>
                                   <p className="text-[11px] text-secondary truncate">
-                                    {Array.isArray(cand.artists) ? cand.artists.join(", ") : cand.artists || "Unknown"}
+                                    {cand.channelTitle ? `CHANNEL: ${cand.channelTitle}` : (Array.isArray(cand.artists) ? cand.artists.join(", ") : cand.artists || "Unknown")}
                                   </p>
                                 </div>
 

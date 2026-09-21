@@ -104,11 +104,13 @@ model PlaylistTrack {
   durationMs     Int      @default(0)
   isExplicit     Boolean  @default(false)
   position       Int      @default(0)
+  isrc           String?
   createdAt      DateTime @default(now())
   playlist       Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
 
   @@index([playlistId])
   @@index([spotifyTrackId])
+  @@index([isrc])
 }
 
 model Transfer {
@@ -153,10 +155,14 @@ model TransferItem {
   album             String?
   durationMs        Int          @default(0)
   isExplicit        Boolean      @default(false)
+  isrc              String?
   status            ItemStatus   @default(PENDING)
   targetVideoId     String?
   targetTitle       String?
   targetArtist      String?
+  channelTitle      String?
+  isOfficialChannel Boolean      @default(false)
+  suggestedMatch    Json?
   confidenceScore   Float?
   topCandidatesJson String?
   resolvedAt        DateTime?

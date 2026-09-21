@@ -237,6 +237,7 @@ export const transferWorker = new Worker<TransferJobPayload>(
           album: item.album,
           durationMs: item.durationMs,
           isExplicit: item.isExplicit,
+          isrc: item.isrc,
         },
         { googleAccessToken }
       );
@@ -249,6 +250,7 @@ export const transferWorker = new Worker<TransferJobPayload>(
           album: item.album,
           durationMs: item.durationMs,
           isExplicit: item.isExplicit,
+          isrc: item.isrc,
         },
         candidates,
         {
@@ -268,6 +270,7 @@ export const transferWorker = new Worker<TransferJobPayload>(
             album: item.album,
             durationMs: item.durationMs,
             isExplicit: item.isExplicit,
+            isrc: item.isrc,
           },
           candidates,
           {
@@ -281,6 +284,9 @@ export const transferWorker = new Worker<TransferJobPayload>(
 
       if (matchResult.matched && matchResult.bestMatch) {
         const best = matchResult.bestMatch;
+        const channelTitle = best.channelTitle || (best.artists && best.artists.length > 0 ? best.artists.join(", ") : null);
+        const isOfficialChannel = Boolean(best.isOfficialChannel || best.isSong);
+        const suggestedMatch = matchResult.suggestedMatch ? (matchResult.suggestedMatch as any) : undefined;
 
         // Skip duplicates check
         if (transfer.skipDuplicates && seenVideoIds.has(best.videoId)) {
@@ -291,6 +297,10 @@ export const transferWorker = new Worker<TransferJobPayload>(
               status: ItemStatus.SKIPPED,
               targetVideoId: best.videoId,
               targetTitle: best.title,
+              targetArtist: best.artists.join(", "),
+              channelTitle,
+              isOfficialChannel,
+              suggestedMatch,
               confidenceScore: best.confidenceScore,
               topCandidatesJson: JSON.stringify(matchResult.topCandidates),
             },
@@ -318,6 +328,9 @@ export const transferWorker = new Worker<TransferJobPayload>(
               targetVideoId: best.videoId,
               targetTitle: best.title,
               targetArtist: best.artists.join(", "),
+              channelTitle,
+              isOfficialChannel,
+              suggestedMatch,
               confidenceScore: best.confidenceScore,
               topCandidatesJson: JSON.stringify(matchResult.topCandidates),
             },
@@ -327,6 +340,7 @@ export const transferWorker = new Worker<TransferJobPayload>(
         // Failed match
         failedCount++;
         const topCandidatesJson = JSON.stringify(matchResult.topCandidates);
+        const suggestedMatch = matchResult.suggestedMatch ? (matchResult.suggestedMatch as any) : undefined;
 
         await prisma.transferItem.update({
           where: { id: item.id },
@@ -334,6 +348,7 @@ export const transferWorker = new Worker<TransferJobPayload>(
             status: ItemStatus.FAILED,
             confidenceScore: matchResult.topCandidates[0]?.confidenceScore || 0,
             topCandidatesJson,
+            suggestedMatch,
           },
         });
 

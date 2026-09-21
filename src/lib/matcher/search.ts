@@ -13,6 +13,11 @@ interface YtMusicServiceResponse {
     durationSeconds?: number | null;
     isExplicit?: boolean;
     source?: string;
+    channelTitle?: string | null;
+    channelId?: string | null;
+    isOfficialChannel?: boolean;
+    isSong?: boolean;
+    isrc?: string | null;
   }>;
 }
 
@@ -39,14 +44,22 @@ async function searchYtMusicService(query: string): Promise<Candidate[]> {
     durationSeconds: item.durationSeconds || null,
     isExplicit: Boolean(item.isExplicit),
     source: "ytmusicapi",
+    channelTitle: item.channelTitle || null,
+    channelId: item.channelId || null,
+    isOfficialChannel: Boolean(item.isOfficialChannel),
+    isSong: Boolean(item.isSong),
+    isrc: item.isrc || null,
   }));
 }
 
 /**
  * Fallback search via YouTube Data API v3 (search.list).
- * Scored with a lower confidence ceiling since general YouTube results are noisier.
  */
-async function searchYouTubeDataApi(query: string, googleAccessToken?: string): Promise<Candidate[]> {
+async function searchYouTubeDataApi(
+  query: string,
+  sourceArtist: string,
+  googleAccessToken?: string
+): Promise<Candidate[]> {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey && !googleAccessToken) {
     return [];
@@ -81,46 +94,98 @@ async function searchYouTubeDataApi(query: string, googleAccessToken?: string): 
 
   const data = await res.json();
   const items = data.items || [];
+  const normSource = sourceArtist.toLowerCase().trim();
 
   return items.map((item: any) => {
     const title = item.snippet?.title || "";
     const channelTitle = item.snippet?.channelTitle || "";
+    const chLower = channelTitle.toLowerCase();
+    const isOfficial =
+      chLower.includes(" - topic") ||
+      chLower.includes("vevo") ||
+      chLower.includes("official") ||
+      chLower === normSource ||
+      chLower.includes(normSource);
+
     return {
       videoId: item.id?.videoId || "",
       title,
       artists: [channelTitle],
       album: null,
-      durationSeconds: null, // search.list doesn't return contentDetails duration
+      durationSeconds: null,
       isExplicit: false,
       source: "youtube_data_api_fallback",
+      channelTitle,
+      channelId: item.snippet?.channelId || null,
+      isOfficialChannel: isOfficial,
+      isSong: false,
     };
   }).filter((c: Candidate) => Boolean(c.videoId));
 }
 
 /**
- * High-fidelity candidate gathering with seamless fallback.
+ * High-fidelity candidate gathering with ISRC-first prioritization,
+ * official artist channel targeting, and seamless fallbacks.
  */
 export async function gatherCandidates(
   track: TrackInput,
   options?: { googleAccessToken?: string }
 ): Promise<Candidate[]> {
-  const query = `${track.artist} ${track.title}`.trim();
+  const allCandidates: Candidate[] = [];
+  const seenVideoIds = new Set<string>();
 
-  // 1. Primary: ytmusicapi microservice
-  try {
-    const candidates = await searchYtMusicService(query);
-    if (candidates && candidates.length > 0) {
-      return candidates;
+  const addUnique = (list: Candidate[]) => {
+    for (const c of list) {
+      if (c.videoId && !seenVideoIds.has(c.videoId)) {
+        seenVideoIds.add(c.videoId);
+        allCandidates.push(c);
+      }
     }
-  } catch (err: any) {
-    console.warn(`[Matcher] ytmusic-service unavailable or failed for "${query}": ${err.message}. Falling back to YouTube Data API.`);
+  };
+
+  // 1. ISRC exact search if ISRC code is available
+  if (track.isrc) {
+    try {
+      const isrcCandidates = await searchYtMusicService(track.isrc.trim());
+      if (isrcCandidates.length > 0) {
+        addUnique(isrcCandidates.map(c => ({ ...c, isrc: track.isrc })));
+      }
+    } catch (err: any) {
+      console.warn(`[Matcher] ISRC search skipped for "${track.isrc}":`, err.message);
+    }
   }
 
-  // 2. Secondary fallback: YouTube Data API v3
+  // 2. Primary track title + artist search
+  const query = `${track.artist} ${track.title}`.trim();
   try {
-    const fallbackCandidates = await searchYouTubeDataApi(query, options?.googleAccessToken);
-    if (fallbackCandidates && fallbackCandidates.length > 0) {
-      return fallbackCandidates;
+    const primaryCandidates = await searchYtMusicService(query);
+    addUnique(primaryCandidates);
+  } catch (err: any) {
+    console.warn(`[Matcher] ytmusic-service error for "${query}": ${err.message}.`);
+  }
+
+  // 3. If no official candidate found yet, search specifically for official artist upload
+  const hasOfficial = allCandidates.some(c => c.isOfficialChannel || c.isSong);
+  if (!hasOfficial && track.artist) {
+    try {
+      const officialQuery = `${track.artist} ${track.title} official`;
+      const officialCandidates = await searchYtMusicService(officialQuery);
+      addUnique(officialCandidates);
+    } catch (err: any) {
+      // ignore
+    }
+  }
+
+  if (allCandidates.length > 0) {
+    return allCandidates;
+  }
+
+  // 4. Secondary fallback: YouTube Data API v3
+  try {
+    const fallbackCandidates = await searchYouTubeDataApi(query, track.artist, options?.googleAccessToken);
+    addUnique(fallbackCandidates);
+    if (allCandidates.length > 0) {
+      return allCandidates;
     }
   } catch (err: any) {
     if (err.name === "YouTubeQuotaError") {
@@ -129,7 +194,7 @@ export async function gatherCandidates(
     console.warn(`[Matcher] YouTube Data API fallback failed: ${err.message}`);
   }
 
-  // 3. Synthetic/deterministic fallback candidate for testing/sandbox
+  // 5. Synthetic/deterministic fallback candidate for testing/sandbox
   return [
     {
       videoId: `yt_mock_${Buffer.from(query).toString("base64url").slice(0, 11)}`,
@@ -139,6 +204,9 @@ export async function gatherCandidates(
       durationSeconds: Math.round(track.durationMs / 1000),
       isExplicit: track.isExplicit,
       source: "synthetic_catalog",
+      channelTitle: `${track.artist} - Topic`,
+      isOfficialChannel: true,
+      isSong: true,
     },
   ];
 }

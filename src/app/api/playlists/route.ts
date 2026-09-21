@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { handleRouteError } from "@/lib/api-handler";
 import { Provider } from "@prisma/client";
 import { syncSpotifyPlaylistTracks } from "@/lib/spotify-tracks";
+import { syncSpotifyLikedSongs } from "@/lib/spotify-liked";
 
 export async function GET(request: NextRequest) {
   try {
@@ -69,6 +70,13 @@ export async function GET(request: NextRequest) {
             } catch (err: any) {
               console.warn(`[Playlists] Background track pre-sync failed for ${pl.name}:`, err.message);
             }
+          }
+
+          // Sync Liked Songs library
+          try {
+            await syncSpotifyLikedSongs(session.userId, false);
+          } catch (err: any) {
+            console.warn("[Playlists] Background Liked Songs sync skipped/failed:", err.message);
           }
         }
       } catch (e: any) {

@@ -11,6 +11,7 @@ export interface NormalizedTrack {
   durationMs: number;
   isExplicit: boolean;
   position: number;
+  isrc?: string | null;
 }
 
 /**
@@ -48,6 +49,7 @@ export function normalizeTrackItem(rawItem: any, idx: number, playlistDbId: stri
   const durationMs = Math.max(0, Number(track.duration_ms || track.durationMs) || 0);
   const isExplicit = Boolean(track.explicit || track.isExplicit);
   const spotifyTrackId = String(track.id || track.uri || `spotify_trk_${idx}_${Date.now()}`);
+  const isrc = typeof track.external_ids?.isrc === "string" ? track.external_ids.isrc.trim().toUpperCase() : null;
 
   return {
     playlistId: playlistDbId,
@@ -58,6 +60,7 @@ export function normalizeTrackItem(rawItem: any, idx: number, playlistDbId: stri
     durationMs,
     isExplicit,
     position: idx,
+    isrc,
   };
 }
 

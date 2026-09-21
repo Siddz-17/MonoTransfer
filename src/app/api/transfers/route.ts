@@ -127,6 +127,7 @@ export async function POST(request: NextRequest) {
             album: track.album,
             durationMs: track.durationMs,
             isExplicit: track.isExplicit,
+            isrc: track.isrc || null,
             status: ItemStatus.PENDING,
           })),
         },

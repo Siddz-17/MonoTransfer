@@ -21,10 +21,6 @@ def startup_event():
     except Exception as e:
         logger.error(f"Failed to initialize ytmusicapi client: {e}")
 
-class ArtistInfo(BaseModel):
-    name: str
-    id: Optional[str] = None
-
 class CandidateTrack(BaseModel):
     videoId: str
     title: str
@@ -33,6 +29,10 @@ class CandidateTrack(BaseModel):
     durationSeconds: Optional[int] = None
     isExplicit: bool = False
     source: str = "ytmusicapi"
+    channelTitle: Optional[str] = None
+    channelId: Optional[str] = None
+    isOfficialChannel: bool = False
+    isSong: bool = False
 
 class SearchResponse(BaseModel):
     query: str
@@ -70,10 +70,13 @@ def search_catalog(
 
     logger.info(f"Searching YTMusic catalog: '{q}' (limit={limit})")
     try:
-        # Search songs filter first for cleanest official metadata
+        # 1. Search songs filter first for cleanest official metadata
+        is_song_filter = True
         results = ytmusic.search(query=q, filter="songs", limit=limit)
-        # If very few results, also fallback to general search or video search
+        
+        # 2. If no results, fallback to general search
         if not results or len(results) == 0:
+            is_song_filter = False
             results = ytmusic.search(query=q, limit=limit)
 
         candidates: List[CandidateTrack] = []
@@ -83,15 +86,39 @@ def search_catalog(
                 continue
 
             title = item.get("title", "")
+            result_type = item.get("resultType", "")
+            is_song = is_song_filter or result_type == "song"
             
-            # Extract artists list
+            # Extract artists list and channel info
             artists = []
+            channel_title = None
+            channel_id = None
+
             if "artists" in item and isinstance(item["artists"], list):
                 for a in item["artists"]:
-                    if isinstance(a, dict) and "name" in a:
-                        artists.append(a["name"])
+                    if isinstance(a, dict):
+                        a_name = a.get("name")
+                        if a_name:
+                            artists.append(a_name)
+                        if not channel_id and a.get("id"):
+                            channel_id = a.get("id")
+                        if not channel_title and a_name:
+                            channel_title = a_name
                     elif isinstance(a, str):
                         artists.append(a)
+                        if not channel_title:
+                            channel_title = a
+
+            # Also check uploader/author/channel fields
+            if not channel_title:
+                channel_title = item.get("author") or item.get("channel")
+
+            # Check if this candidate is an official artist or Topic channel upload
+            is_official = is_song
+            if channel_title:
+                ch_lower = channel_title.lower()
+                if " - topic" in ch_lower or "official" in ch_lower or "vevo" in ch_lower:
+                    is_official = True
 
             # Extract album
             album_name = None
@@ -116,7 +143,11 @@ def search_catalog(
                 album=album_name,
                 durationSeconds=duration_sec,
                 isExplicit=bool(is_explicit),
-                source="ytmusicapi"
+                source="ytmusicapi",
+                channelTitle=channel_title,
+                channelId=channel_id,
+                isOfficialChannel=is_official,
+                isSong=is_song
             ))
 
         return SearchResponse(
@@ -127,7 +158,3 @@ def search_catalog(
     except Exception as e:
         logger.error(f"Error querying ytmusicapi for '{q}': {e}")
         raise HTTPException(status_code=502, detail=f"ytmusicapi query failed: {str(e)}")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
