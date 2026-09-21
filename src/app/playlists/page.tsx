@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { PlaylistCard } from "@/components/PlaylistCard";
 import { SearchInput } from "@/components/SearchInput";
 import { LoadingState } from "@/components/LoadingState";
 import { EmptyState } from "@/components/EmptyState";
-import { RefreshCw, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { RefreshCw, ArrowUpDown, ChevronLeft, ChevronRight, Heart, ArrowRight } from "lucide-react";
 
 export default function PlaylistsPage() {
   const [playlists, setPlaylists] = useState<any[]>([]);
@@ -120,6 +121,47 @@ export default function PlaylistsPage() {
             </div>
           </div>
 
+          {/* Pinned Liked Songs Hero Card */}
+          <div className="border border-foreground bg-foreground/5 p-6 md:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-6 relative overflow-hidden group">
+            <div className="flex items-center gap-5">
+              <div className="w-14 h-14 border border-foreground bg-foreground text-background flex items-center justify-center shrink-0">
+                <Heart className="w-7 h-7 fill-current" />
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold tracking-widest uppercase bg-foreground text-background px-2 py-0.5">
+                    SOURCE // SAVED TRACKS
+                  </span>
+                  <span className="text-xs font-mono text-secondary uppercase tracking-widest">
+                    SPOTIFY LIBRARY
+                  </span>
+                </div>
+                <h2 className="font-dot text-2xl tracking-wider uppercase font-bold text-foreground">
+                  LIKED SONGS
+                </h2>
+                <p className="text-xs font-mono text-secondary leading-relaxed">
+                  Migrate your complete Spotify Liked Songs collection directly into YouTube Music.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 shrink-0 pt-4 sm:pt-0 border-t sm:border-t-0 border-border">
+              <Link
+                href="/playlists/liked_songs"
+                className="px-4 py-3 border border-border hover:border-foreground text-xs font-mono tracking-widest uppercase transition-colors"
+              >
+                PREVIEW
+              </Link>
+              <Link
+                href="/transfers/new?playlistId=liked_songs"
+                className="inline-flex items-center gap-2 px-5 py-3 border border-foreground bg-foreground text-background hover:bg-background hover:text-foreground text-xs font-mono font-bold tracking-widest uppercase transition-all"
+              >
+                <span>TRANSFER LIKED SONGS</span>
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+            </div>
+          </div>
+
           {/* Playlist Cards Grid */}
           {loading ? (
             <LoadingState label="FETCHING SPOTIFY CATALOG..." />
@@ -139,16 +181,18 @@ export default function PlaylistsPage() {
           ) : (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {playlists.map((pl) => (
-                  <PlaylistCard
-                    key={pl.id}
-                    id={pl.id}
-                    name={pl.name}
-                    description={pl.description}
-                    trackCount={pl.trackCount}
-                    imageUrl={pl.imageUrl}
-                  />
-                ))}
+                {playlists
+                  .filter((pl) => pl.spotifyId !== "liked_songs")
+                  .map((pl) => (
+                    <PlaylistCard
+                      key={pl.id}
+                      id={pl.id}
+                      name={pl.name}
+                      description={pl.description}
+                      trackCount={pl.trackCount}
+                      imageUrl={pl.imageUrl}
+                    />
+                  ))}
               </div>
 
               {/* Pagination Controls */}

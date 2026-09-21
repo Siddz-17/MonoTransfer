@@ -119,6 +119,7 @@ model Transfer {
   sourcePlaylistId           String?
   targetPlaylistId           String?
   targetPlaylistName         String
+  direction                  String         @default("SPOTIFY_TO_YTMUSIC")
   mode                       TransferMode   @default(NEW)
   skipDuplicates             Boolean        @default(true)
   retryFailedMatches         Boolean        @default(true)

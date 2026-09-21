@@ -47,7 +47,7 @@ export async function getSpotifyAuthUrl(request?: NextRequest): Promise<string> 
     path: "/",
   });
 
-  const scope = "playlist-read-private playlist-read-collaborative user-read-email user-read-private";
+  const scope = "playlist-read-private playlist-read-collaborative user-library-read user-library-modify playlist-modify-public playlist-modify-private user-read-email user-read-private";
 
   const params = new URLSearchParams({
     response_type: "code",

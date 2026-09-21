@@ -9,8 +9,17 @@ import { gatherCandidates } from "../lib/matcher/search";
 import { evaluateCandidates } from "../lib/matcher/scoring";
 import { getValidAccessToken } from "../lib/session";
 import { Provider, TransferStatus, ItemStatus } from "@prisma/client";
+import { createSpotifyPlaylist, searchSpotifyTrack, addTracksToSpotifyPlaylist } from "../lib/spotify-write";
 
 const pubClient = createRedisClient();
+
+async function broadcastProgress(transferId: string, payload: any): Promise<void> {
+  try {
+    await pubClient.publish(`transfer:${transferId}:progress`, JSON.stringify(payload));
+  } catch (err: any) {
+    console.warn(`[Worker] Failed publishing progress for ${transferId}:`, err.message);
+  }
+}
 
 interface TransferJobPayload {
   transferId: string;
@@ -151,6 +160,129 @@ export const transferWorker = new Worker<TransferJobPayload>(
       },
     });
 
+    // -------------------------------------------------------------
+    // Bi-Directional: YouTube Music -> Spotify
+    // -------------------------------------------------------------
+    if (transfer.direction === "YTMUSIC_TO_SPOTIFY") {
+      let spotifyToken = "";
+      try {
+        spotifyToken = await getValidAccessToken(transfer.userId, Provider.SPOTIFY);
+      } catch (err: any) {
+        console.warn(`[Worker] Spotify token not available: ${err.message}`);
+      }
+
+      let targetSpotifyId = transfer.targetPlaylistId;
+      if (!targetSpotifyId && spotifyToken) {
+        try {
+          const spPl = await createSpotifyPlaylist(
+            transfer.targetPlaylistName || "Migrated from YouTube Music",
+            "Migrated via MonoTransfer",
+            !transfer.privatePlaylist,
+            spotifyToken
+          );
+          targetSpotifyId = spPl.id;
+          await prisma.transfer.update({
+            where: { id: transferId },
+            data: { targetPlaylistId: targetSpotifyId },
+          });
+        } catch (err: any) {
+          console.warn("[Worker] Could not create Spotify target playlist:", err.message);
+        }
+      }
+
+      const pendingItems = await prisma.transferItem.findMany({
+        where: { transferId, status: ItemStatus.PENDING },
+        orderBy: { createdAt: "asc" },
+      });
+
+      const totalTracks = transfer.totalTracks || 1;
+      let matchedCount = transfer.matchedCount;
+      let failedCount = transfer.failedCount;
+      let skippedCount = transfer.skippedCount;
+      const matchedUris: string[] = [];
+
+      for (const item of pendingItems) {
+        const progressPercent = Math.min(100, Math.round(((matchedCount + failedCount + skippedCount) / totalTracks) * 100));
+        await broadcastProgress(transferId, {
+          transferId,
+          status: TransferStatus.PROCESSING,
+          matchedCount,
+          failedCount,
+          skippedCount,
+          totalTracks,
+          progressPercent,
+          currentTrackTitle: `${item.artist} - ${item.title}`,
+        });
+
+        let matched = false;
+        if (spotifyToken) {
+          try {
+            const match = await searchSpotifyTrack(item.title, item.artist, spotifyToken);
+            if (match) {
+              matched = true;
+              matchedUris.push(match.uri);
+              matchedCount++;
+              await prisma.transferItem.update({
+                where: { id: item.id },
+                data: {
+                  status: ItemStatus.MATCHED,
+                  targetVideoId: match.id,
+                  targetTitle: match.title,
+                  targetArtist: match.artist,
+                  confidenceScore: match.confidenceScore,
+                },
+              });
+            }
+          } catch (err: any) {
+            console.warn("[Worker] Spotify track search error:", err.message);
+          }
+        }
+
+        if (!matched) {
+          failedCount++;
+          await prisma.transferItem.update({
+            where: { id: item.id },
+            data: {
+              status: ItemStatus.FAILED,
+              confidenceScore: 0,
+            },
+          });
+        }
+      }
+
+      // Add all matched URIs to Spotify playlist
+      if (spotifyToken && targetSpotifyId && matchedUris.length > 0) {
+        await addTracksToSpotifyPlaylist(targetSpotifyId, matchedUris, spotifyToken);
+      }
+
+      // Mark transfer complete
+      await prisma.transfer.update({
+        where: { id: transferId },
+        data: {
+          status: TransferStatus.COMPLETED,
+          matchedCount,
+          failedCount,
+          skippedCount,
+          completedAt: new Date(),
+        },
+      });
+
+      await broadcastProgress(transferId, {
+        transferId,
+        status: TransferStatus.COMPLETED,
+        matchedCount,
+        failedCount,
+        skippedCount,
+        totalTracks,
+        progressPercent: 100,
+      });
+
+      return;
+    }
+
+    // -------------------------------------------------------------
+    // Direction: Spotify -> YouTube Music
+    // -------------------------------------------------------------
     // Obtain valid Google access token if connected
     let googleAccessToken: string | undefined = undefined;
     try {
@@ -337,40 +469,76 @@ export const transferWorker = new Worker<TransferJobPayload>(
           });
         }
       } else {
-        // Failed match
-        failedCount++;
+        // Did not clear strict threshold — auto-approve highest matching candidate
+        // while preserving record in review list so user can check/swap later if required!
+        const autoCandidate = matchResult.topCandidates[0] || null;
         const topCandidatesJson = JSON.stringify(matchResult.topCandidates);
         const suggestedMatch = matchResult.suggestedMatch ? (matchResult.suggestedMatch as any) : undefined;
 
-        await prisma.transferItem.update({
-          where: { id: item.id },
-          data: {
-            status: ItemStatus.FAILED,
-            confidenceScore: matchResult.topCandidates[0]?.confidenceScore || 0,
-            topCandidatesJson,
-            suggestedMatch,
-          },
-        });
+        if (autoCandidate) {
+          const autoChannelTitle = autoCandidate.channelTitle || (autoCandidate.artists && autoCandidate.artists.length > 0 ? autoCandidate.artists.join(", ") : null);
+          const autoIsOfficial = Boolean(autoCandidate.isOfficialChannel || autoCandidate.isSong);
 
-        // Denormalized record for fast Failed Matches screen query
-        await prisma.failedMatch.upsert({
-          where: { transferItemId: item.id },
-          update: {
-            suggestedCandidatesJson: topCandidatesJson,
-            resolved: false,
-          },
-          create: {
-            transferId,
-            transferItemId: item.id,
-            title: item.title,
-            artist: item.artist,
-            album: item.album,
-            durationMs: item.durationMs,
-            isExplicit: item.isExplicit,
-            suggestedCandidatesJson: topCandidatesJson,
-            resolved: false,
-          },
-        });
+          // Add to YouTube Playlist if Google account is linked
+          if (googleAccessToken && targetPlaylistId && !seenVideoIds.has(autoCandidate.videoId)) {
+            seenVideoIds.add(autoCandidate.videoId);
+            try {
+              await insertTrackToYouTubePlaylist(googleAccessToken, targetPlaylistId, autoCandidate.videoId);
+            } catch (err: any) {
+              if (err.name === "YouTubeQuotaError") {
+                throw err;
+              }
+              console.warn(`[Worker] Auto-approved track insertion notice for ${autoCandidate.videoId}: ${err.message}`);
+            }
+          }
+
+          matchedCount++;
+          await prisma.transferItem.update({
+            where: { id: item.id },
+            data: {
+              status: ItemStatus.MATCHED,
+              targetVideoId: autoCandidate.videoId,
+              targetTitle: autoCandidate.title,
+              targetArtist: autoCandidate.artists.join(", "),
+              channelTitle: autoChannelTitle,
+              isOfficialChannel: autoIsOfficial,
+              suggestedMatch,
+              confidenceScore: autoCandidate.confidenceScore,
+              topCandidatesJson,
+            },
+          });
+
+          // Keep in review list so user can inspect or change later
+          await prisma.failedMatch.upsert({
+            where: { transferItemId: item.id },
+            update: {
+              suggestedCandidatesJson: topCandidatesJson,
+              resolved: false,
+            },
+            create: {
+              transferId,
+              transferItemId: item.id,
+              title: item.title,
+              artist: item.artist,
+              album: item.album,
+              durationMs: item.durationMs,
+              isExplicit: item.isExplicit,
+              suggestedCandidatesJson: topCandidatesJson,
+              resolved: false,
+            },
+          });
+        } else {
+          // Zero candidates found
+          failedCount++;
+          await prisma.transferItem.update({
+            where: { id: item.id },
+            data: {
+              status: ItemStatus.FAILED,
+              confidenceScore: 0,
+              topCandidatesJson: "[]",
+            },
+          });
+        }
       }
 
       const processed = matchedCount + failedCount + skippedCount;

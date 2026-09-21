@@ -52,6 +52,7 @@ export async function POST(request: NextRequest) {
       sourcePlaylistId,
       targetPlaylistName,
       targetPlaylistId,
+      direction = "SPOTIFY_TO_YTMUSIC",
       mode = "NEW",
       skipDuplicates = true,
       retryFailedMatches = true,
@@ -65,8 +66,76 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "sourcePlaylistId is required" }, { status: 400 });
     }
 
-    const playlist = await prisma.playlist.findFirst({
-      where: { id: sourcePlaylistId, userId: session.userId },
+    // Handle Bi-Directional Transfer: YouTube Music -> Spotify
+    if (direction === "YTMUSIC_TO_SPOTIFY") {
+      let ytTracks: any[] = [];
+      try {
+        const origin = new URL(request.url).origin;
+        const ytTracksRes = await fetch(`${origin}/api/youtube/playlists/${sourcePlaylistId}/tracks`, {
+          headers: { Cookie: request.headers.get("cookie") || "" },
+        });
+        if (ytTracksRes.ok) {
+          const data = await ytTracksRes.json();
+          ytTracks = data.tracks || [];
+        }
+      } catch (err: any) {
+        console.warn("[Transfers] Failed fetching YouTube playlist tracks:", err.message);
+      }
+
+      if (ytTracks.length === 0) {
+        return NextResponse.json(
+          { error: "Could not retrieve any tracks for this YouTube Music playlist." },
+          { status: 400 }
+        );
+      }
+
+      const finalTargetName = targetPlaylistName?.trim() || "Migrated from YouTube Music";
+
+      const transfer = await prisma.transfer.create({
+        data: {
+          userId: session.userId,
+          targetPlaylistName: finalTargetName,
+          targetPlaylistId: mode === "EXISTING" ? targetPlaylistId : null,
+          direction: "YTMUSIC_TO_SPOTIFY",
+          mode: mode === "EXISTING" ? TransferMode.EXISTING : TransferMode.NEW,
+          skipDuplicates: Boolean(skipDuplicates),
+          retryFailedMatches: Boolean(retryFailedMatches),
+          matchExplicitVersions: Boolean(matchExplicitVersions),
+          matchLiveVersions: Boolean(matchLiveVersions),
+          privatePlaylist: Boolean(privatePlaylist),
+          minimumConfidenceThreshold: Number(minimumConfidenceThreshold) || 0.72,
+          status: TransferStatus.PENDING,
+          totalTracks: ytTracks.length,
+          items: {
+            create: ytTracks.map((t: any) => ({
+              sourceTrackId: t.videoId,
+              title: t.title,
+              artist: t.artist,
+              durationMs: 0,
+              isExplicit: false,
+              status: ItemStatus.PENDING,
+            })),
+          },
+        },
+      });
+
+      try {
+        await enqueueTransferJob(transfer.id);
+      } catch (err: any) {
+        console.warn("[Queue] Enqueue notice:", err.message);
+      }
+
+      return NextResponse.json({ transferId: transfer.id, success: true });
+    }
+
+    // Direction: Spotify -> YouTube Music
+    let playlist = await prisma.playlist.findFirst({
+      where: {
+        OR: [
+          { id: sourcePlaylistId, userId: session.userId },
+          { spotifyId: sourcePlaylistId, userId: session.userId },
+        ],
+      },
       include: {
         tracks: { orderBy: { position: "asc" } },
       },
