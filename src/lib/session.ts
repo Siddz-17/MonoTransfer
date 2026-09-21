@@ -118,7 +118,8 @@ export async function clearSessionCookie(): Promise<void> {
  */
 export async function getValidAccessToken(
   userId: string,
-  provider: Provider
+  provider: Provider,
+  forceRefresh = false
 ): Promise<string> {
   const connection = await prisma.connection.findUnique({
     where: {
@@ -139,7 +140,7 @@ export async function getValidAccessToken(
   const safetyMarginMs = 5 * 60 * 1000; // 5 minutes safety margin
   const isExpiringSoon = connection.expiresAt.getTime() - now.getTime() < safetyMarginMs;
 
-  if (!isExpiringSoon) {
+  if (!forceRefresh && !isExpiringSoon) {
     return decryptToken(connection.accessTokenEnc, connection.iv, connection.authTag);
   }
 

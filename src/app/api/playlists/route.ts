@@ -3,6 +3,7 @@ import { requireSession, getValidAccessToken } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { handleRouteError } from "@/lib/api-handler";
 import { Provider } from "@prisma/client";
+import { syncSpotifyPlaylistTracks } from "@/lib/spotify-tracks";
 
 export async function GET(request: NextRequest) {
   try {
@@ -26,7 +27,9 @@ export async function GET(request: NextRequest) {
 
         if (res.ok) {
           const data = await res.json();
-          for (const item of data.items || []) {
+          const items = data.items || [];
+          for (const item of items) {
+            const rawTrackCount = item.tracks?.total ?? item.items?.total ?? 0;
             await prisma.playlist.upsert({
               where: {
                 userId_spotifyId: {
@@ -37,7 +40,7 @@ export async function GET(request: NextRequest) {
               update: {
                 name: item.name || "Untitled Playlist",
                 description: item.description || null,
-                trackCount: item.tracks?.total || 0,
+                trackCount: rawTrackCount,
                 imageUrl: item.images?.[0]?.url || null,
                 snapshotId: item.snapshot_id || null,
               },
@@ -46,11 +49,26 @@ export async function GET(request: NextRequest) {
                 spotifyId: item.id,
                 name: item.name || "Untitled Playlist",
                 description: item.description || null,
-                trackCount: item.tracks?.total || 0,
+                trackCount: rawTrackCount,
                 imageUrl: item.images?.[0]?.url || null,
                 snapshotId: item.snapshot_id || null,
               },
             });
+          }
+
+          // Pre-sync tracks for the first 3 playlists
+          const firstThree = items.slice(0, 3);
+          for (const pl of firstThree) {
+            try {
+              const dbPl = await prisma.playlist.findUnique({
+                where: { userId_spotifyId: { userId: session.userId, spotifyId: pl.id } },
+              });
+              if (dbPl) {
+                await syncSpotifyPlaylistTracks(session.userId, dbPl.id, pl.id, false);
+              }
+            } catch (err: any) {
+              console.warn(`[Playlists] Background track pre-sync failed for ${pl.name}:`, err.message);
+            }
           }
         }
       } catch (e: any) {

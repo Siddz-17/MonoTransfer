@@ -16,9 +16,12 @@ export function PlaylistCard({ id, name, description, trackCount, imageUrl }: Pl
     <div className="border border-border p-6 flex flex-col justify-between hover:border-foreground transition-all duration-150 group bg-background relative">
       <div className="space-y-4">
         <div className="flex items-start justify-between gap-4">
-          <div className="w-10 h-10 border border-border flex items-center justify-center shrink-0 group-hover:border-foreground group-hover:bg-foreground group-hover:text-background transition-colors">
+          <Link
+            href={`/playlists/${id}`}
+            className="w-10 h-10 border border-border flex items-center justify-center shrink-0 group-hover:border-foreground group-hover:bg-foreground group-hover:text-background transition-colors"
+          >
             <Disc3 className="w-5 h-5" />
-          </div>
+          </Link>
           <div className="text-right">
             <span className="text-xs font-mono font-bold tracking-widest uppercase border border-border px-2 py-0.5">
               {trackCount} {trackCount === 1 ? "TRACK" : "TRACKS"}
@@ -27,9 +30,11 @@ export function PlaylistCard({ id, name, description, trackCount, imageUrl }: Pl
         </div>
 
         <div>
-          <h3 className="font-dot text-base tracking-wider uppercase line-clamp-1 group-hover:tracking-widest transition-all">
-            {name}
-          </h3>
+          <Link href={`/playlists/${id}`} className="block">
+            <h3 className="font-dot text-base tracking-wider uppercase line-clamp-1 group-hover:tracking-widest transition-all hover:underline underline-offset-4">
+              {name}
+            </h3>
+          </Link>
           <p className="text-xs font-mono text-secondary mt-1 line-clamp-2 leading-relaxed">
             {description || "No description provided."}
           </p>
