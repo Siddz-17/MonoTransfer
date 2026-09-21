@@ -1,230 +1,206 @@
 import { Candidate, TrackInput } from "./scoring";
 
-/**
- * Sanitize the ytmusic service URL: ensure it has a correct scheme.
- * - On Render, `property: host` returns a bare hostname like `monotransfer-ytmusic.onrender.com`
- *   which needs https://
- * - Internal hostnames like `monotransfer-ytmusic:10000` need http://
- * - Already-complete URLs are left as-is.
- */
-function sanitizeServiceUrl(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return "http://localhost:8000";
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  // Render public hostnames need https://
-  if (trimmed.includes(".onrender.com")) return `https://${trimmed}`;
-  // Internal hostnames (e.g. monotransfer-ytmusic:10000) use http://
-  return `http://${trimmed}`;
+// ─────────────────────────────────────────────────────────────────────────────
+// Direct YouTube Music Internal API
+// Replicates what ytmusicapi Python library does under the hood.
+// music.youtube.com/youtubei/v1/search — no quota, no cold starts, no service.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const YTM_API_KEY = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-NKNELL6Cs";
+const YTM_CLIENT_VERSION = "1.20240101.01.00";
+const SONGS_FILTER_PARAMS = "EgWKAQIIAWoKEAoQAxAEEAkQBQ==";
+
+function ytmContext() {
+  return {
+    client: {
+      clientName: "WEB_REMIX",
+      clientVersion: YTM_CLIENT_VERSION,
+      hl: "en",
+      gl: "US",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      timeZone: "UTC",
+      utcOffsetMinutes: 0,
+    },
+  };
 }
 
-const YTMUSIC_SERVICE_URL = sanitizeServiceUrl(
-  process.env.YTMUSIC_SERVICE_URL || "http://localhost:8000"
-);
-
-interface YtMusicServiceResponse {
-  query: string;
-  count: number;
-  candidates: Array<{
-    videoId: string;
-    title: string;
-    artists: string[];
-    album?: string | null;
-    durationSeconds?: number | null;
-    isExplicit?: boolean;
-    source?: string;
-    channelTitle?: string | null;
-    channelId?: string | null;
-    isOfficialChannel?: boolean;
-    isSong?: boolean;
-    isrc?: string | null;
-  }>;
+function parseRunsText(runs: any[]): string {
+  if (!Array.isArray(runs)) return "";
+  return runs.map((r: any) => r.text || "").join("");
 }
 
-/**
- * Warms up the ytmusic-service by polling /health until it responds or timeout.
- * Render free-tier services spin down after inactivity and take 30-50s to cold start.
- * Call this once at the start of a transfer before processing tracks.
- */
-export async function warmupYtMusicService(
-  maxWaitMs = 120000,
-  retryIntervalMs = 4000
-): Promise<boolean> {
-  const healthUrl = `${YTMUSIC_SERVICE_URL}/health`;
-  const start = Date.now();
-  console.log(`[Matcher] Warming up ytmusic-service at ${healthUrl} (max ${maxWaitMs / 1000}s)...`);
+function parseDurationToSeconds(text: string): number | null {
+  if (!text) return null;
+  const parts = text.trim().split(":").map(Number);
+  if (parts.some(isNaN)) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
 
-  while (Date.now() - start < maxWaitMs) {
-    try {
-      const res = await fetch(healthUrl, {
-        method: "GET",
-        signal: AbortSignal.timeout(6000),
-      });
-      if (res.ok) {
-        // Confirm it's actually our service (not Render's spin-up page)
-        const body = await res.text().catch(() => "");
-        if (body.includes("ytmusic-service") || body.includes("ok")) {
-          console.log(`[Matcher] ytmusic-service is ready (${Date.now() - start}ms)`);
-          return true;
-        }
+function parseMusicItem(item: any): Candidate | null {
+  const renderer = item?.musicResponsiveListItemRenderer;
+  if (!renderer) return null;
+
+  const videoId =
+    renderer.playlistItemData?.videoId ||
+    renderer.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]
+      ?.navigationEndpoint?.watchEndpoint?.videoId ||
+    renderer.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer
+      ?.playNavigationEndpoint?.watchEndpoint?.videoId;
+
+  if (!videoId || videoId.startsWith("RDAMVM")) return null;
+
+  const titleRuns =
+    renderer.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || [];
+  const title = parseRunsText(titleRuns);
+  if (!title) return null;
+
+  const subtitleRuns: any[] =
+    renderer.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || [];
+
+  const artists: string[] = [];
+  let album: string | null = null;
+  let durationSeconds: number | null = null;
+  let channelId: string | null = null;
+
+  for (const run of subtitleRuns) {
+    const text = (run.text || "").trim();
+    if (!text || text === "\u2022") continue;
+    const browseId = run.navigationEndpoint?.browseEndpoint?.browseId as string | undefined;
+    if (browseId) {
+      if (browseId.startsWith("UC") || browseId.startsWith("MPLA")) {
+        artists.push(text);
+        if (!channelId) channelId = browseId;
+      } else if (browseId.startsWith("MPREb")) {
+        album = text;
       }
-    } catch {
-      // still waking up, keep retrying
+    } else if (/^\d+:\d+/.test(text)) {
+      durationSeconds = parseDurationToSeconds(text);
     }
-    const elapsed = Math.round((Date.now() - start) / 1000);
-    console.log(`[Matcher] ytmusic-service not ready yet (${elapsed}s elapsed), retrying...`);
-    await new Promise((r) => setTimeout(r, retryIntervalMs));
   }
 
-  console.warn(`[Matcher] ytmusic-service did not wake up within ${maxWaitMs / 1000}s — will use YouTube Data API fallback only.`);
-  return false;
+  const badges: any[] = renderer.badges || [];
+  const isExplicit = badges.some(
+    (b: any) => b.musicInlineBadgeRenderer?.icon?.iconType === "MUSIC_EXPLICIT_BADGE"
+  );
+
+  const channelTitle = artists[0] || null;
+  const isOfficialChannel = Boolean(
+    channelId?.startsWith("UC") ||
+    channelTitle?.toLowerCase().includes("vevo") ||
+    channelTitle?.toLowerCase().includes("official")
+  );
+
+  return {
+    videoId, title, artists, album, durationSeconds, isExplicit,
+    source: "ytmusic_direct", channelTitle, channelId: channelId || null,
+    isOfficialChannel, isSong: true,
+  };
 }
 
-/**
- * Searches the internal Python ytmusicapi microservice.
- */
-async function searchYtMusicService(query: string): Promise<Candidate[]> {
-  const url = `${YTMUSIC_SERVICE_URL}/search?q=${encodeURIComponent(query)}&limit=10`;
-  const res = await fetch(url, {
-    method: "GET",
-    signal: AbortSignal.timeout(8000),
-  });
+function extractItems(data: any): any[] {
+  const items: any[] = [];
+  try {
+    const tabs = data?.contents?.tabbedSearchResultsRenderer?.tabs;
+    if (tabs) {
+      const sections = tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents || [];
+      for (const section of sections) items.push(...(section?.musicShelfRenderer?.contents || []));
+    }
+    if (items.length === 0) {
+      const sections = data?.contents?.sectionListRenderer?.contents || [];
+      for (const section of sections) items.push(...(section?.musicShelfRenderer?.contents || []));
+    }
+  } catch { }
+  return items;
+}
 
-  if (!res.ok) {
-    throw new Error(`ytmusic-service returned ${res.status}: ${res.statusText}`);
+async function searchYouTubeMusicDirect(
+  query: string, useSongsFilter = true, limit = 10
+): Promise<Candidate[]> {
+  const body: any = { context: ytmContext(), query };
+  if (useSongsFilter) body.params = SONGS_FILTER_PARAMS;
+
+  const res = await fetch(
+    `https://music.youtube.com/youtubei/v1/search?key=${YTM_API_KEY}&prettyPrint=false`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-YouTube-Client-Name": "67",
+        "X-YouTube-Client-Version": YTM_CLIENT_VERSION,
+        Origin: "https://music.youtube.com",
+        Referer: "https://music.youtube.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(6000),
+    }
+  );
+
+  if (!res.ok) throw new Error(`YouTube Music API ${res.status}: ${res.statusText}`);
+
+  const data = await res.json();
+  const rawItems = extractItems(data);
+  const candidates: Candidate[] = [];
+  for (const item of rawItems.slice(0, limit)) {
+    const candidate = parseMusicItem(item);
+    if (candidate) candidates.push(candidate);
   }
-
-  const data: YtMusicServiceResponse = await res.json();
-  return (data.candidates || []).map((item) => ({
-    videoId: item.videoId,
-    title: item.title,
-    artists: item.artists || [],
-    album: item.album || null,
-    durationSeconds: item.durationSeconds || null,
-    isExplicit: Boolean(item.isExplicit),
-    source: "ytmusicapi",
-    channelTitle: item.channelTitle || null,
-    channelId: item.channelId || null,
-    isOfficialChannel: Boolean(item.isOfficialChannel),
-    isSong: Boolean(item.isSong),
-    isrc: item.isrc || null,
-  }));
+  return candidates;
 }
 
-/**
- * Global serialized queue for YouTube Data API search requests.
- * Prevents 429 (Too Many Requests) caused by 3 concurrent tracks all firing
- * YouTube API calls at the same moment. Enforces 2.5s between each request.
- */
 let ytDataApiQueue: Promise<void> = Promise.resolve();
 
 function queueYouTubeDataApiSearch<T>(operation: () => Promise<T>): Promise<T> {
   const next = ytDataApiQueue.then(async () => {
-    await new Promise((r) => setTimeout(r, 2500)); // 2.5s gap prevents 429
+    await new Promise((r) => setTimeout(r, 2500));
     return operation();
   });
-  ytDataApiQueue = next.then(
-    () => {},
-    () => {}
-  );
+  ytDataApiQueue = next.then(() => {}, () => {});
   return next;
 }
 
-/**
- * Fallback search via YouTube Data API v3 using the user's Google OAuth token.
- *
- * IMPORTANT: We use ONLY the user's OAuth token here, NOT an API key.
- * Reason: The YouTube Data API quota (10,000 units/day) is per Google Cloud project.
- * search.list costs 100 units — so an API key runs out after just 100 searches/day.
- * OAuth tokens still share the project quota but avoids key-specific restrictions
- * and provides proper authenticated access. If no OAuth token, skip this fallback.
- *
- * Serialized through queueYouTubeDataApiSearch to avoid 429 rate limiting.
- * Retries once with 10s backoff on 429 before giving up.
- */
 async function searchYouTubeDataApi(
-  query: string,
-  sourceArtist: string,
-  googleAccessToken?: string
+  query: string, sourceArtist: string, googleAccessToken?: string
 ): Promise<Candidate[]> {
-  // Only proceed if we have an OAuth token — skip API key to avoid shared quota drain
-  if (!googleAccessToken) {
-    return [];
-  }
-
+  if (!googleAccessToken) return [];
   return queueYouTubeDataApiSearch(async () => {
     const makeRequest = async (retryDelay = 0): Promise<Candidate[]> => {
-      if (retryDelay > 0) {
-        await new Promise((r) => setTimeout(r, retryDelay));
-      }
-
+      if (retryDelay > 0) await new Promise((r) => setTimeout(r, retryDelay));
       const endpoint = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=5&q=${encodeURIComponent(query)}`;
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${googleAccessToken}`,
-      };
-
-      const res = await fetch(endpoint, {
-        method: "GET",
-        headers,
-        signal: AbortSignal.timeout(8000),
-      });
-
+      const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${googleAccessToken}` }, signal: AbortSignal.timeout(8000) });
       if (!res.ok) {
-        if (res.status === 429) {
-          if (retryDelay === 0) {
-            console.warn(`[Matcher] YouTube Data API 429 for "${query}" — retrying in 10s`);
-            return makeRequest(10000);
-          }
-          throw new Error(`YouTube Data API returned 429: Too Many Requests (after retry)`);
-        }
-        if (res.status === 403) {
-          const body = await res.text();
-          if (body.includes("quotaExceeded")) {
-            const err = new Error("YouTubeQuotaError: API quota limit reached");
-            err.name = "YouTubeQuotaError";
-            throw err;
-          }
-        }
-        throw new Error(`YouTube Data API returned ${res.status}: ${res.statusText}`);
+        if (res.status === 429) { if (retryDelay === 0) return makeRequest(10000); throw new Error("429 after retry"); }
+        if (res.status === 403) { const b = await res.text(); if (b.includes("quotaExceeded")) { const e: any = new Error("YouTubeQuotaError"); e.name = "YouTubeQuotaError"; throw e; } }
+        throw new Error(`YT Data API ${res.status}`);
       }
-
       const data = await res.json();
-      const items = data.items || [];
       const normSource = sourceArtist.toLowerCase().trim();
-
-      return (items.map((item: any) => {
+      return (data.items || []).map((item: any) => {
         const title = item.snippet?.title || "";
         const channelTitle = item.snippet?.channelTitle || "";
-        const chLower = channelTitle.toLowerCase();
-        const isOfficial =
-          chLower.includes(" - topic") ||
-          chLower.includes("vevo") ||
-          chLower.includes("official") ||
-          chLower === normSource ||
-          chLower.includes(normSource);
-
-        return {
-          videoId: item.id?.videoId || "",
-          title,
-          artists: [channelTitle],
-          album: null,
-          durationSeconds: null,
-          isExplicit: false,
-          source: "youtube_data_api_fallback",
-          channelTitle,
-          channelId: item.snippet?.channelId || null,
-          isOfficialChannel: isOfficial,
-          isSong: false,
-        };
-      }) as Candidate[]).filter((c: Candidate) => Boolean(c.videoId));
+        const ch = channelTitle.toLowerCase();
+        const isOfficial = ch.includes("- topic") || ch.includes("vevo") || ch.includes("official") || ch === normSource || ch.includes(normSource);
+        return { videoId: item.id?.videoId || "", title, artists: [channelTitle], album: null, durationSeconds: null, isExplicit: false, source: "youtube_data_api_fallback", channelTitle, channelId: item.snippet?.channelId || null, isOfficialChannel: isOfficial, isSong: false } as Candidate;
+      }).filter((c: Candidate) => Boolean(c.videoId));
     };
-
     return makeRequest();
   });
 }
 
 /**
- * High-fidelity candidate gathering with ISRC-first prioritization,
- * official artist channel targeting, and seamless fallbacks.
+ * No-op kept for API compatibility. Direct YTM API needs no warmup.
+ */
+export async function warmupYtMusicService(): Promise<boolean> {
+  console.log("[Matcher] Direct YouTube Music API active — no warmup needed.");
+  return true;
+}
+
+/**
+ * Gathers candidates using YouTube Music's internal API directly.
+ * No Python service, no quota limits, no cold starts.
  */
 export async function gatherCandidates(
   track: TrackInput,
@@ -242,62 +218,49 @@ export async function gatherCandidates(
     }
   };
 
-  // 1. ISRC exact search if ISRC code is available
+  // 1. ISRC search (gold standard — exact match)
   if (track.isrc) {
     try {
-      const isrcCandidates = await searchYtMusicService(track.isrc.trim());
-      if (isrcCandidates.length > 0) {
-        addUnique(isrcCandidates.map(c => ({ ...c, isrc: track.isrc })));
-      }
+      const isrcResults = await searchYouTubeMusicDirect(track.isrc.trim(), true, 5);
+      if (isrcResults.length > 0) addUnique(isrcResults.map((c) => ({ ...c, isrc: track.isrc })));
     } catch (err: any) {
-      console.warn(`[Matcher] ISRC search skipped for "${track.isrc}":`, err.message);
+      console.warn(`[Matcher] ISRC search failed for "${track.isrc}": ${err.message}`);
     }
   }
 
-  // 2. Primary track title + artist search
+  // 2. Primary: artist + title (songs filter)
   const query = `${track.artist} ${track.title}`.trim();
   try {
-    const primaryCandidates = await searchYtMusicService(query);
-    addUnique(primaryCandidates);
+    const primary = await searchYouTubeMusicDirect(query, true, 10);
+    addUnique(primary);
   } catch (err: any) {
-    console.warn(`[Matcher] ytmusic-service error for "${query}": ${err.message}.`);
+    console.warn(`[Matcher] YTM search failed for "${query}": ${err.message}`);
   }
 
-  // 3. If no official candidate found yet, search specifically for official artist upload
-  const hasOfficial = allCandidates.some(c => c.isOfficialChannel || c.isSong);
+  // 3. General search if no official results yet
+  const hasOfficial = allCandidates.some((c) => c.isOfficialChannel || c.isSong);
   if (!hasOfficial && track.artist) {
     try {
-      const officialQuery = `${track.artist} ${track.title} official`;
-      const officialCandidates = await searchYtMusicService(officialQuery);
-      addUnique(officialCandidates);
-    } catch (err: any) {
-      // ignore
-    }
+      const general = await searchYouTubeMusicDirect(query, false, 8);
+      addUnique(general);
+    } catch { }
   }
 
-  if (allCandidates.length > 0) {
-    return allCandidates;
-  }
+  if (allCandidates.length > 0) return allCandidates;
 
-  // 4. Secondary fallback: YouTube Data API v3 (uses user OAuth token or API key from env).
-  // This is the primary fallback when the ytmusic-service Python microservice is not running.
+  // 4. YouTube Data API v3 last-resort fallback
   try {
-    const fallbackCandidates = await searchYouTubeDataApi(query, track.artist, options?.googleAccessToken);
-    addUnique(fallbackCandidates);
+    const fallback = await searchYouTubeDataApi(query, track.artist, options?.googleAccessToken);
+    addUnique(fallback);
     if (allCandidates.length > 0) {
-      console.log(`[Matcher] Using YouTube Data API fallback for "${query}" (${allCandidates.length} results)`);
+      console.log(`[Matcher] YT Data API fallback used for "${query}"`);
       return allCandidates;
     }
   } catch (err: any) {
-    if (err.name === "YouTubeQuotaError") {
-      throw err;
-    }
-    console.warn(`[Matcher] YouTube Data API fallback failed: ${err.message}`);
+    if (err.name === "YouTubeQuotaError") throw err;
+    console.warn(`[Matcher] YT Data API fallback failed for "${query}": ${err.message}`);
   }
 
-  // 5. No real candidates found — return empty array.
-  // IMPORTANT: Never return synthetic/mock videoIds. Fake IDs like "yt_mock_xxx" cause
-  // silent 400/404 failures when inserted into YouTube playlists, resulting in 0 songs added.
-  console.warn(`[Matcher] No candidates found for "${query}" — track will be marked as failed.`);
+  console.warn(`[Matcher] No candidates found for "${query}"`);
   return [];
 }
