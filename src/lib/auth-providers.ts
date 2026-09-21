@@ -7,6 +7,17 @@ import { setSessionCookie, getSession } from "./session";
 import { Provider, AuditAction } from "@prisma/client";
 
 export function getAppBaseUrl(request?: NextRequest): string {
+  // 1. If running on Render, use the official public URL
+  if (process.env.RENDER_EXTERNAL_URL) {
+    return process.env.RENDER_EXTERNAL_URL.replace(/\/$/, "");
+  }
+
+  // 2. If NEXT_PUBLIC_APP_URL is configured, use it
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
+  }
+
+  // 3. Otherwise detect from incoming request headers
   if (request) {
     const proto = request.headers.get("x-forwarded-proto") || (request.url.startsWith("https") ? "https" : "http");
     const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
@@ -14,11 +25,8 @@ export function getAppBaseUrl(request?: NextRequest): string {
       return `${proto}://${host}`.replace(/\/$/, "");
     }
   }
-  return (
-    process.env.RENDER_EXTERNAL_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "http://localhost:3000"
-  ).replace(/\/$/, "");
+
+  return "http://localhost:3000";
 }
 
 export function generateRandomState(): string {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { handleSpotifyCallback } from "@/lib/auth-providers";
+import { handleSpotifyCallback, getAppBaseUrl } from "@/lib/auth-providers";
 import { handleRouteError } from "@/lib/api-handler";
 
 export async function GET(request: NextRequest) {
@@ -8,17 +8,18 @@ export async function GET(request: NextRequest) {
     const code = searchParams.get("code");
     const state = searchParams.get("state");
     const error = searchParams.get("error");
+    const baseUrl = getAppBaseUrl(request);
 
     if (error) {
-      return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(error)}`, request.url));
+      return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(error)}`, baseUrl));
     }
 
     if (!code || !state) {
-      return NextResponse.redirect(new URL("/?error=missing_oauth_params", request.url));
+      return NextResponse.redirect(new URL("/?error=missing_oauth_params", baseUrl));
     }
 
     await handleSpotifyCallback(code, state, request);
-    return NextResponse.redirect(new URL("/dashboard", request.url));
+    return NextResponse.redirect(new URL("/dashboard", baseUrl));
   } catch (err: any) {
     console.error("[Spotify Callback Error]", err);
     return handleRouteError(err);
