@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { PlaylistTable } from "@/components/PlaylistTable";
 import { LoadingState } from "@/components/LoadingState";
-import { ArrowLeft, ArrowRight, Disc3 } from "lucide-react";
+import { ArrowLeft, ArrowRight, RefreshCw, AlertCircle } from "lucide-react";
 
 export default function PlaylistPreviewPage() {
   const params = useParams();
@@ -16,19 +16,42 @@ export default function PlaylistPreviewPage() {
 
   const [playlist, setPlaylist] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!id) return;
-    fetch(`/api/playlists/${id}`)
-      .then((r) => r.json())
-      .then((data) => {
+  const fetchPlaylist = useCallback(async (forceSync = false) => {
+    if (forceSync) setSyncing(true);
+    else setLoading(true);
+    setErrorMsg(null);
+
+    try {
+      const res = await fetch(`/api/playlists/${id}${forceSync ? "?sync=true" : ""}`);
+      if (res.ok) {
+        const data = await res.json();
         if (data.playlist) {
           setPlaylist(data.playlist);
         }
-      })
-      .catch((err) => console.error("Error fetching playlist:", err))
-      .finally(() => setLoading(false));
+        if (data.syncError) {
+          setErrorMsg(data.syncError);
+        }
+      } else {
+        const errData = await res.json();
+        setErrorMsg(errData.message || "Failed to load playlist.");
+      }
+    } catch (err: any) {
+      console.error("Error fetching playlist:", err);
+      setErrorMsg(err.message);
+    } finally {
+      setLoading(false);
+      setSyncing(false);
+    }
   }, [id]);
+
+  useEffect(() => {
+    if (id) {
+      fetchPlaylist();
+    }
+  }, [id, fetchPlaylist]);
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">
@@ -56,12 +79,28 @@ export default function PlaylistPreviewPage() {
             </div>
           ) : (
             <>
+              {/* Error Notice if any */}
+              {errorMsg && (
+                <div className="border border-foreground p-4 bg-muted/20 font-mono text-xs flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-foreground shrink-0" />
+                    <span>{errorMsg}</span>
+                  </div>
+                  <button
+                    onClick={() => fetchPlaylist(true)}
+                    className="underline hover:opacity-80 shrink-0 font-bold uppercase"
+                  >
+                    RETRY SYNC
+                  </button>
+                </div>
+              )}
+
               {/* Playlist Summary Hero */}
               <div className="border border-border p-8 bg-background flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
                     <span className="font-mono text-xs border border-border px-2.5 py-0.5 uppercase tracking-widest font-bold">
-                      {playlist.tracks?.length || playlist.trackCount} TRACKS
+                      {playlist.tracks?.length || 0} TRACKS LOADED
                     </span>
                     <span className="font-mono text-xs text-secondary uppercase tracking-widest">
                       ID: {playlist.spotifyId}
@@ -79,7 +118,16 @@ export default function PlaylistPreviewPage() {
                   )}
                 </div>
 
-                <div className="shrink-0">
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    onClick={() => fetchPlaylist(true)}
+                    disabled={syncing}
+                    className="inline-flex items-center gap-2 px-4 py-3.5 border border-border hover:border-foreground font-mono text-xs font-semibold tracking-widest uppercase transition-all disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
+                    <span>{syncing ? "SYNCING..." : "RE-SYNC TRACKS"}</span>
+                  </button>
+
                   <Link
                     href={`/transfers/new?playlistId=${playlist.id}`}
                     className="inline-flex items-center gap-3 px-6 py-3.5 border border-foreground bg-foreground text-background hover:bg-background hover:text-foreground font-mono text-xs font-bold tracking-widest uppercase transition-all"
@@ -90,14 +138,29 @@ export default function PlaylistPreviewPage() {
                 </div>
               </div>
 
-              {/* Tracks Table */}
+              {/* Tracks Manifest */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between font-mono text-xs text-secondary tracking-widest uppercase">
                   <span>// TRACK MANIFEST</span>
-                  <span>TOTAL: {playlist.tracks?.length || 0} TRACKS</span>
+                  <span>COUNT: {playlist.tracks?.length || 0} TRACKS</span>
                 </div>
 
-                <PlaylistTable tracks={playlist.tracks || []} />
+                {playlist.tracks?.length === 0 ? (
+                  <div className="border border-border p-12 text-center space-y-4 bg-background">
+                    <p className="font-mono text-xs text-secondary uppercase tracking-widest">
+                      NO TRACKS CACHED YET FOR THIS PLAYLIST.
+                    </p>
+                    <button
+                      onClick={() => fetchPlaylist(true)}
+                      disabled={syncing}
+                      className="px-6 py-2.5 border border-foreground bg-foreground text-background font-mono text-xs font-bold tracking-widest uppercase hover:bg-background hover:text-foreground transition-all disabled:opacity-50"
+                    >
+                      {syncing ? "FETCHING TRACKS FROM SPOTIFY..." : "FETCH TRACKS FROM SPOTIFY"}
+                    </button>
+                  </div>
+                ) : (
+                  <PlaylistTable tracks={playlist.tracks || []} />
+                )}
               </div>
             </>
           )}
