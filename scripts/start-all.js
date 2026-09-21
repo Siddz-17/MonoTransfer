@@ -2,7 +2,7 @@
  * Unified process runner for single-container / Render Free Tier deployments.
  * Runs Next.js web server, BullMQ worker, and WebSocket server concurrently.
  */
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 
 function startProcess(name, command, args, extraEnv = {}) {
   const proc = spawn(command, args, {
@@ -24,6 +24,15 @@ function startProcess(name, command, args, extraEnv = {}) {
 console.log("==================================================");
 console.log("  MONOTRANSFER // UNIFIED DEPLOYMENT RUNNER");
 console.log("==================================================");
+
+// Run Prisma schema push on startup (when DB is accessible in private network)
+try {
+  console.log("[START-ALL] Running prisma db push...");
+  execSync("npx prisma db push --skip-generate", { stdio: "inherit" });
+  console.log("[START-ALL] Prisma DB schema sync complete.");
+} catch (err) {
+  console.error("[START-ALL] Warning: Prisma db push failed:", err.message);
+}
 
 // 1. WebSocket Server (Port 3001)
 const wsProc = startProcess("WS", "npx", ["tsx", "src/server/ws.ts"]);

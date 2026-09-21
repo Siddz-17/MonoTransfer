@@ -193,7 +193,10 @@ async function searchYouTubeDataApi(
 /**
  * No-op kept for API compatibility. Direct YTM API needs no warmup.
  */
-export async function warmupYtMusicService(): Promise<boolean> {
+export async function warmupYtMusicService(
+  _timeoutMs?: number,
+  _pollIntervalMs?: number
+): Promise<boolean> {
   console.log("[Matcher] Direct YouTube Music API active — no warmup needed.");
   return true;
 }

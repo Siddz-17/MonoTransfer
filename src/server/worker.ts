@@ -424,9 +424,7 @@ export const transferWorker = new Worker<TransferJobPayload>(
     }
 
     // Warm up the ytmusic-service before processing (handles Render free-tier cold starts).
-    // Uses public .onrender.com URL which properly triggers wake-up via Render's load balancer.
-    // Internal hostnames (hostport) do NOT wake sleeping services — only public URLs do.
-    await warmupYtMusicService(120000, 4000);
+    await warmupYtMusicService();
 
     // Fetch only PENDING items for idempotent resume
     const pendingItems = await prisma.transferItem.findMany({
