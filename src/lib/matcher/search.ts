@@ -157,7 +157,7 @@ async function searchYouTubeDataApi(
         await new Promise((r) => setTimeout(r, retryDelay));
       }
 
-      const endpoint = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&maxResults=8&q=${encodeURIComponent(query)}`;
+      const endpoint = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=5&q=${encodeURIComponent(query)}`;
       const headers: Record<string, string> = {
         Authorization: `Bearer ${googleAccessToken}`,
       };
