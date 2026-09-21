@@ -81,17 +81,40 @@ export default function PlaylistPreviewPage() {
             <>
               {/* Error Notice if any */}
               {errorMsg && (
-                <div className="border border-foreground p-4 bg-muted/20 font-mono text-xs flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 text-foreground shrink-0" />
-                    <span>{errorMsg}</span>
+                <div className="border border-foreground p-5 bg-background font-mono text-xs space-y-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-start gap-2.5">
+                      <AlertCircle className="w-4 h-4 text-foreground shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold uppercase block text-foreground">SYNC WARNING</span>
+                        <span className="text-secondary leading-relaxed mt-0.5 block">{errorMsg}</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => fetchPlaylist(true)}
+                      className="underline hover:opacity-80 shrink-0 font-bold uppercase text-[11px]"
+                    >
+                      RETRY SYNC
+                    </button>
                   </div>
-                  <button
-                    onClick={() => fetchPlaylist(true)}
-                    className="underline hover:opacity-80 shrink-0 font-bold uppercase"
-                  >
-                    RETRY SYNC
-                  </button>
+
+                  {(errorMsg.includes("SPOTIFY_SCOPE_REQUIRED") ||
+                    errorMsg.toLowerCase().includes("scope") ||
+                    errorMsg.toLowerCase().includes("permission") ||
+                    errorMsg.toLowerCase().includes("reconnect")) && (
+                    <div className="pt-2 border-t border-border flex items-center justify-between">
+                      <span className="text-[11px] text-secondary">
+                        Click below to re-authorize Spotify with library permissions:
+                      </span>
+                      <a
+                        href="/api/auth/spotify"
+                        className="inline-flex items-center gap-2 px-4 py-2 border border-foreground bg-foreground text-background font-bold text-[11px] uppercase tracking-wider hover:bg-background hover:text-foreground transition-all"
+                      >
+                        <span>RECONNECT SPOTIFY NOW</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -146,17 +169,32 @@ export default function PlaylistPreviewPage() {
                 </div>
 
                 {playlist.tracks?.length === 0 ? (
-                  <div className="border border-border p-12 text-center space-y-4 bg-background">
-                    <p className="font-mono text-xs text-secondary uppercase tracking-widest">
+                  <div className="border border-border p-12 text-center space-y-5 bg-background font-mono">
+                    <p className="text-xs text-secondary uppercase tracking-widest">
                       NO TRACKS CACHED YET FOR THIS PLAYLIST.
                     </p>
-                    <button
-                      onClick={() => fetchPlaylist(true)}
-                      disabled={syncing}
-                      className="px-6 py-2.5 border border-foreground bg-foreground text-background font-mono text-xs font-bold tracking-widest uppercase hover:bg-background hover:text-foreground transition-all disabled:opacity-50"
-                    >
-                      {syncing ? "FETCHING TRACKS FROM SPOTIFY..." : "FETCH TRACKS FROM SPOTIFY"}
-                    </button>
+                    {playlist.spotifyId === "liked_songs" && (
+                      <p className="text-[11px] text-secondary max-w-md mx-auto leading-relaxed">
+                        If fetching returns 0 tracks, your Spotify session may be missing the &apos;user-library-read&apos; permission. Reconnect your account below to grant library access.
+                      </p>
+                    )}
+                    <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                      <button
+                        onClick={() => fetchPlaylist(true)}
+                        disabled={syncing}
+                        className="px-6 py-2.5 border border-foreground bg-foreground text-background font-mono text-xs font-bold tracking-widest uppercase hover:bg-background hover:text-foreground transition-all disabled:opacity-50"
+                      >
+                        {syncing ? "FETCHING TRACKS FROM SPOTIFY..." : "FETCH TRACKS FROM SPOTIFY"}
+                      </button>
+                      {playlist.spotifyId === "liked_songs" && (
+                        <a
+                          href="/api/auth/spotify"
+                          className="px-6 py-2.5 border border-border hover:border-foreground text-foreground font-mono text-xs font-bold tracking-widest uppercase transition-all"
+                        >
+                          RECONNECT SPOTIFY
+                        </a>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <PlaylistTable tracks={playlist.tracks || []} />

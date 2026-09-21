@@ -5,6 +5,7 @@ import { handleRouteError } from "@/lib/api-handler";
 import { enqueueTransferJob } from "@/server/queue";
 import { TransferMode, TransferStatus, ItemStatus, AuditAction } from "@prisma/client";
 import { syncSpotifyPlaylistTracks } from "@/lib/spotify-tracks";
+import { syncSpotifyLikedSongs } from "@/lib/spotify-liked";
 
 export async function GET(request: NextRequest) {
   try {
@@ -141,6 +142,14 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    if (!playlist && (sourcePlaylistId === "liked_songs" || sourcePlaylistId === "liked-songs")) {
+      await syncSpotifyLikedSongs(session.userId, true);
+      playlist = await prisma.playlist.findFirst({
+        where: { spotifyId: "liked_songs", userId: session.userId },
+        include: { tracks: { orderBy: { position: "asc" } } },
+      });
+    }
+
     if (!playlist) {
       return NextResponse.json({ error: "Source playlist not found" }, { status: 404 });
     }
@@ -149,12 +158,14 @@ export async function POST(request: NextRequest) {
 
     // If tracks are not cached yet, sync them on-the-fly
     if (tracks.length === 0 && playlist.spotifyId) {
-      const syncResult = await syncSpotifyPlaylistTracks(
-        session.userId,
-        playlist.id,
-        playlist.spotifyId,
-        false
-      );
+      const syncResult = playlist.spotifyId === "liked_songs"
+        ? await syncSpotifyLikedSongs(session.userId, false)
+        : await syncSpotifyPlaylistTracks(
+            session.userId,
+            playlist.id,
+            playlist.spotifyId,
+            false
+          );
       if (syncResult.success) {
         tracks = await prisma.playlistTrack.findMany({
           where: { playlistId: playlist.id },

@@ -51,25 +51,36 @@ export async function syncSpotifyLikedSongs(
     let nextUrl: string | null = "https://api.spotify.com/v1/me/tracks?limit=50";
     let pagesFetched = 0;
     let totalFromApi = 0;
+    let lastError: string | null = null;
+    let lastStatus = 200;
 
-    while (nextUrl && pagesFetched < 10) {
+    while (nextUrl && pagesFetched < 20) {
       pagesFetched++;
       try {
         let res = await fetch(nextUrl, {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
         });
 
         // Token expired? Force refresh once
         if (res.status === 401) {
           token = await getValidAccessToken(userId, Provider.SPOTIFY, true);
           res = await fetch(nextUrl, {
-            headers: { Authorization: `Bearer ${token}` },
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
           });
         }
+
+        lastStatus = res.status;
 
         if (!res.ok) {
           const errText = await res.text().catch(() => "");
           console.warn(`[LikedSongs] /me/tracks page error (${res.status}): ${errText}`);
+          lastError = errText || res.statusText;
           break;
         }
 
@@ -83,11 +94,31 @@ export async function syncSpotifyLikedSongs(
         nextUrl = data.next || null;
       } catch (err: any) {
         console.warn("[LikedSongs] Fetch iteration error:", err.message);
+        lastError = err.message;
         break;
       }
     }
 
+    // If an error occurred and no items were retrieved
+    if (lastError && allItems.length === 0) {
+      const isScopeError =
+        lastStatus === 403 ||
+        lastError.toLowerCase().includes("scope") ||
+        lastError.toLowerCase().includes("insufficient");
+      return {
+        success: false,
+        count: 0,
+        error: isScopeError
+          ? "SPOTIFY_SCOPE_REQUIRED: Spotify library permissions (user-library-read) are missing. Please reconnect Spotify to grant access to your Liked Songs."
+          : `Spotify API error (${lastStatus}): ${lastError}`,
+      };
+    }
+
     if (allItems.length === 0) {
+      await prisma.playlist.update({
+        where: { id: playlist.id },
+        data: { trackCount: 0 },
+      });
       return {
         success: true,
         count: 0,

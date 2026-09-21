@@ -135,6 +135,11 @@ export default function PlaylistsPage() {
                   <span className="text-xs font-mono text-secondary uppercase tracking-widest">
                     SPOTIFY LIBRARY
                   </span>
+                  {playlists.find((p) => p.spotifyId === "liked_songs")?.trackCount ? (
+                    <span className="text-[10px] font-mono border border-foreground px-2 py-0.5 uppercase font-bold text-foreground">
+                      {playlists.find((p) => p.spotifyId === "liked_songs")?.trackCount} TRACKS CACHED
+                    </span>
+                  ) : null}
                 </div>
                 <h2 className="font-dot text-2xl tracking-wider uppercase font-bold text-foreground">
                   LIKED SONGS

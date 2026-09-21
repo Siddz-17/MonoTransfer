@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
 
           // Sync Liked Songs library
           try {
-            await syncSpotifyLikedSongs(session.userId, false);
+            await syncSpotifyLikedSongs(session.userId, refresh);
           } catch (err: any) {
             console.warn("[Playlists] Background Liked Songs sync skipped/failed:", err.message);
           }

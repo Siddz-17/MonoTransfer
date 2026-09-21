@@ -55,6 +55,7 @@ export async function getSpotifyAuthUrl(request?: NextRequest): Promise<string> 
     scope,
     redirect_uri: redirectUri,
     state,
+    show_dialog: "true",
   });
 
   return `https://accounts.spotify.com/authorize?${params.toString()}`;

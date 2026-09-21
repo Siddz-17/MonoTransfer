@@ -29,22 +29,25 @@ export async function GET(
       },
     });
 
+    let syncError: string | null = null;
+
     if (!playlist && id === "liked_songs") {
-      await syncSpotifyLikedSongs(session.userId, true);
+      const initSync = await syncSpotifyLikedSongs(session.userId, true);
       playlist = await prisma.playlist.findFirst({
         where: { spotifyId: "liked_songs", userId: session.userId },
         include: { tracks: { orderBy: { position: "asc" } } },
       });
+      if (!initSync.success && initSync.error) {
+        syncError = initSync.error;
+      }
     }
 
     if (!playlist) {
       return NextResponse.json({ error: "Playlist not found" }, { status: 404 });
     }
 
-    let syncError: string | null = null;
-
-    // Sync tracks from Spotify if tracks are empty or forceSync is true
-    if ((playlist.tracks.length === 0 || forceSync) && playlist.spotifyId) {
+    // Sync tracks from Spotify if tracks are empty (and not just synced above with error) or forceSync is true
+    if (!syncError && (playlist.tracks.length === 0 || forceSync) && playlist.spotifyId) {
       const syncResult = playlist.spotifyId === "liked_songs"
         ? await syncSpotifyLikedSongs(session.userId, forceSync)
         : await syncSpotifyPlaylistTracks(

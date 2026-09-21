@@ -178,12 +178,20 @@ export default function SettingsPage() {
                     </div>
 
                     {session?.connections?.spotify ? (
-                      <button
-                        onClick={() => handleDisconnect("spotify")}
-                        className="px-3.5 py-1.5 border border-border hover:border-foreground text-xs uppercase tracking-wider text-secondary hover:text-foreground transition-all"
-                      >
-                        DISCONNECT
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <a
+                          href="/api/auth/spotify"
+                          className="px-3.5 py-1.5 border border-foreground bg-foreground text-background text-xs uppercase font-bold tracking-wider hover:bg-background hover:text-foreground transition-all"
+                        >
+                          RECONNECT
+                        </a>
+                        <button
+                          onClick={() => handleDisconnect("spotify")}
+                          className="px-3.5 py-1.5 border border-border hover:border-foreground text-xs uppercase tracking-wider text-secondary hover:text-foreground transition-all"
+                        >
+                          DISCONNECT
+                        </button>
+                      </div>
                     ) : (
                       <a
                         href="/api/auth/spotify"
