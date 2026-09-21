@@ -70,42 +70,108 @@ async function createYouTubePlaylist(
   return data.id;
 }
 
-/**
- * Inserts a video into a YouTube playlist.
- */
-async function insertTrackToYouTubePlaylist(
-  accessToken: string,
-  playlistId: string,
-  videoId: string
-): Promise<void> {
-  const res = await fetch("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      snippet: {
-        playlistId,
-        resourceId: {
-          kind: "youtube#video",
-          videoId,
-        },
-      },
-    }),
-  });
+let playlistWriteLock: Promise<void> = Promise.resolve();
 
-  if (!res.ok) {
-    if (res.status === 403) {
-      const txt = await res.text();
-      if (txt.includes("quotaExceeded")) {
-        const err = new Error("YouTubeQuotaError: YouTube quota exceeded");
-        err.name = "YouTubeQuotaError";
-        throw err;
+/**
+ * Serializes writes to YouTube Music playlist with safe delay to eliminate 409 Conflict collisions.
+ */
+function queueYouTubePlaylistInsert<T>(operation: () => Promise<T>): Promise<T> {
+  const next = playlistWriteLock.then(async () => {
+    // 350ms spacing between YouTube writes ensures no rateLimitExceeded or 409 Conflict
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    return operation();
+  });
+  playlistWriteLock = next.then(
+    () => {},
+    () => {}
+  );
+  return next;
+}
+
+interface InsertResult {
+  success: boolean;
+  insertedVideoId?: string;
+  error?: string;
+}
+
+/**
+ * Inserts candidate into YouTube playlist with auto-retry, backoff, and candidate fallback.
+ */
+async function insertCandidateToPlaylist(
+  userId: string,
+  playlistId: string,
+  candidates: Array<{ videoId: string; title?: string }>,
+  getCurrentToken: () => string,
+  onTokenRefresh: (newToken: string) => void
+): Promise<InsertResult> {
+  let token = getCurrentToken();
+
+  for (const candidate of candidates) {
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      try {
+        const res = await fetch("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            snippet: {
+              playlistId,
+              resourceId: {
+                kind: "youtube#video",
+                videoId: candidate.videoId,
+              },
+            },
+          }),
+        });
+
+        if (res.ok) {
+          return { success: true, insertedVideoId: candidate.videoId };
+        }
+
+        const errText = await res.text().catch(() => "");
+        console.warn(`[Worker] Insert attempt ${attempts} for ${candidate.videoId} (${res.status}): ${errText}`);
+
+        if (res.status === 401) {
+          // Token expired, refresh and retry
+          try {
+            token = await getValidAccessToken(userId, Provider.GOOGLE, true);
+            onTokenRefresh(token);
+            continue;
+          } catch (tokErr: any) {
+            console.error("[Worker] Token refresh failed:", tokErr.message);
+            return { success: false, error: "Google token expired and refresh failed" };
+          }
+        }
+
+        if (res.status === 403 && errText.includes("quotaExceeded")) {
+          const err = new Error("YouTubeQuotaError: YouTube quota exceeded");
+          err.name = "YouTubeQuotaError";
+          throw err;
+        }
+
+        if (res.status === 409 || res.status === 429 || res.status >= 500) {
+          // Resource conflict or rate limit: wait and retry with exponential backoff
+          await new Promise((r) => setTimeout(r, 600 * attempts));
+          continue;
+        }
+
+        // 400 or 404 (e.g. video unavailable, region blocked, age-gated): try next candidate
+        break;
+      } catch (err: any) {
+        if (err.name === "YouTubeQuotaError") throw err;
+        console.warn(`[Worker] Insert network error on ${candidate.videoId}:`, err.message);
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
-    console.warn(`[Worker] Failed inserting video ${videoId} to playlist ${playlistId}: ${res.status}`);
   }
+
+  return { success: false, error: "Could not insert any candidate into YouTube playlist" };
 }
 
 /**
@@ -312,6 +378,8 @@ export const transferWorker = new Worker<TransferJobPayload>(
       return;
     }
 
+    let currentGoogleToken = googleAccessToken;
+
     // Ensure target YouTube playlist exists
     let targetPlaylistId = transfer.targetPlaylistId;
     if (!targetPlaylistId) {
@@ -448,6 +516,10 @@ export const transferWorker = new Worker<TransferJobPayload>(
         const channelTitle = best.channelTitle || (best.artists && best.artists.length > 0 ? best.artists.join(", ") : null);
         const isOfficialChannel = Boolean(best.isOfficialChannel || best.isSong);
         const suggestedMatch = matchResult.suggestedMatch ? (matchResult.suggestedMatch as any) : undefined;
+        const candidateList = [
+          best,
+          ...matchResult.topCandidates.filter((c: any) => c.videoId !== best.videoId),
+        ];
 
         // Skip duplicates check
         if (transfer.skipDuplicates && seenVideoIds.has(best.videoId)) {
@@ -467,95 +539,153 @@ export const transferWorker = new Worker<TransferJobPayload>(
             },
           });
         } else {
-          seenVideoIds.add(best.videoId);
+          // Serialized insertion with auto-retry on 409/429 and fallback to next candidate on 400/404
+          const insertRes = await queueYouTubePlaylistInsert(() =>
+            insertCandidateToPlaylist(
+              transfer.userId,
+              targetPlaylistId,
+              candidateList,
+              () => currentGoogleToken,
+              (newToken) => { currentGoogleToken = newToken; }
+            )
+          );
 
-          // Add to YouTube Playlist if Google account is linked
-          if (googleAccessToken && targetPlaylistId) {
-            try {
-              await insertTrackToYouTubePlaylist(googleAccessToken, targetPlaylistId, best.videoId);
-            } catch (err: any) {
-              if (err.name === "YouTubeQuotaError") {
-                throw err;
-              }
-              console.warn(`[Worker] Insertion error for ${best.videoId}: ${err.message}`);
-            }
+          if (insertRes.success && insertRes.insertedVideoId) {
+            seenVideoIds.add(insertRes.insertedVideoId);
+            matchedCount++;
+            await prisma.transferItem.update({
+              where: { id: item.id },
+              data: {
+                status: ItemStatus.MATCHED,
+                targetVideoId: insertRes.insertedVideoId,
+                targetTitle: best.title,
+                targetArtist: best.artists.join(", "),
+                channelTitle,
+                isOfficialChannel,
+                suggestedMatch,
+                confidenceScore: best.confidenceScore,
+                topCandidatesJson: JSON.stringify(matchResult.topCandidates),
+              },
+            });
+          } else {
+            failedCount++;
+            await prisma.transferItem.update({
+              where: { id: item.id },
+              data: {
+                status: ItemStatus.FAILED,
+                confidenceScore: 0,
+                topCandidatesJson: JSON.stringify(matchResult.topCandidates),
+              },
+            });
+            await prisma.failedMatch.upsert({
+              where: { transferItemId: item.id },
+              update: {
+                suggestedCandidatesJson: JSON.stringify(matchResult.topCandidates),
+                resolved: false,
+              },
+              create: {
+                transferId,
+                transferItemId: item.id,
+                title: item.title,
+                artist: item.artist,
+                album: item.album,
+                durationMs: item.durationMs,
+                isExplicit: item.isExplicit,
+                suggestedCandidatesJson: JSON.stringify(matchResult.topCandidates),
+                resolved: false,
+              },
+            });
           }
-
-          matchedCount++;
-          await prisma.transferItem.update({
-            where: { id: item.id },
-            data: {
-              status: ItemStatus.MATCHED,
-              targetVideoId: best.videoId,
-              targetTitle: best.title,
-              targetArtist: best.artists.join(", "),
-              channelTitle,
-              isOfficialChannel,
-              suggestedMatch,
-              confidenceScore: best.confidenceScore,
-              topCandidatesJson: JSON.stringify(matchResult.topCandidates),
-            },
-          });
         }
       } else {
         // Did not clear strict threshold — auto-approve highest matching candidate
         // while preserving record in review list so user can check/swap later if required!
-        const autoCandidate = matchResult.topCandidates[0] || null;
-        const topCandidatesJson = JSON.stringify(matchResult.topCandidates);
-        const suggestedMatch = matchResult.suggestedMatch ? (matchResult.suggestedMatch as any) : undefined;
+        const candidateList = matchResult.topCandidates;
 
-        if (autoCandidate) {
+        if (candidateList.length > 0) {
+          const autoCandidate = candidateList[0];
           const autoChannelTitle = autoCandidate.channelTitle || (autoCandidate.artists && autoCandidate.artists.length > 0 ? autoCandidate.artists.join(", ") : null);
           const autoIsOfficial = Boolean(autoCandidate.isOfficialChannel || autoCandidate.isSong);
+          const topCandidatesJson = JSON.stringify(matchResult.topCandidates);
+          const suggestedMatch = matchResult.suggestedMatch ? (matchResult.suggestedMatch as any) : undefined;
 
-          // Add to YouTube Playlist if Google account is linked
-          if (googleAccessToken && targetPlaylistId && !seenVideoIds.has(autoCandidate.videoId)) {
-            seenVideoIds.add(autoCandidate.videoId);
-            try {
-              await insertTrackToYouTubePlaylist(googleAccessToken, targetPlaylistId, autoCandidate.videoId);
-            } catch (err: any) {
-              if (err.name === "YouTubeQuotaError") {
-                throw err;
-              }
-              console.warn(`[Worker] Auto-approved track insertion notice for ${autoCandidate.videoId}: ${err.message}`);
-            }
+          // Serialized insertion with auto-retry and candidate fallback
+          const insertRes = await queueYouTubePlaylistInsert(() =>
+            insertCandidateToPlaylist(
+              transfer.userId,
+              targetPlaylistId,
+              candidateList,
+              () => currentGoogleToken,
+              (newToken) => { currentGoogleToken = newToken; }
+            )
+          );
+
+          if (insertRes.success && insertRes.insertedVideoId) {
+            seenVideoIds.add(insertRes.insertedVideoId);
+            matchedCount++;
+            await prisma.transferItem.update({
+              where: { id: item.id },
+              data: {
+                status: ItemStatus.MATCHED,
+                targetVideoId: insertRes.insertedVideoId,
+                targetTitle: autoCandidate.title,
+                targetArtist: autoCandidate.artists.join(", "),
+                channelTitle: autoChannelTitle,
+                isOfficialChannel: autoIsOfficial,
+                suggestedMatch,
+                confidenceScore: autoCandidate.confidenceScore,
+                topCandidatesJson,
+              },
+            });
+
+            // Keep in review list so user can inspect or change later
+            await prisma.failedMatch.upsert({
+              where: { transferItemId: item.id },
+              update: {
+                suggestedCandidatesJson: topCandidatesJson,
+                resolved: false,
+              },
+              create: {
+                transferId,
+                transferItemId: item.id,
+                title: item.title,
+                artist: item.artist,
+                album: item.album,
+                durationMs: item.durationMs,
+                isExplicit: item.isExplicit,
+                suggestedCandidatesJson: topCandidatesJson,
+                resolved: false,
+              },
+            });
+          } else {
+            failedCount++;
+            await prisma.transferItem.update({
+              where: { id: item.id },
+              data: {
+                status: ItemStatus.FAILED,
+                confidenceScore: 0,
+                topCandidatesJson,
+              },
+            });
+            await prisma.failedMatch.upsert({
+              where: { transferItemId: item.id },
+              update: {
+                suggestedCandidatesJson: topCandidatesJson,
+                resolved: false,
+              },
+              create: {
+                transferId,
+                transferItemId: item.id,
+                title: item.title,
+                artist: item.artist,
+                album: item.album,
+                durationMs: item.durationMs,
+                isExplicit: item.isExplicit,
+                suggestedCandidatesJson: topCandidatesJson,
+                resolved: false,
+              },
+            });
           }
-
-          matchedCount++;
-          await prisma.transferItem.update({
-            where: { id: item.id },
-            data: {
-              status: ItemStatus.MATCHED,
-              targetVideoId: autoCandidate.videoId,
-              targetTitle: autoCandidate.title,
-              targetArtist: autoCandidate.artists.join(", "),
-              channelTitle: autoChannelTitle,
-              isOfficialChannel: autoIsOfficial,
-              suggestedMatch,
-              confidenceScore: autoCandidate.confidenceScore,
-              topCandidatesJson,
-            },
-          });
-
-          // Keep in review list so user can inspect or change later
-          await prisma.failedMatch.upsert({
-            where: { transferItemId: item.id },
-            update: {
-              suggestedCandidatesJson: topCandidatesJson,
-              resolved: false,
-            },
-            create: {
-              transferId,
-              transferItemId: item.id,
-              title: item.title,
-              artist: item.artist,
-              album: item.album,
-              durationMs: item.durationMs,
-              isExplicit: item.isExplicit,
-              suggestedCandidatesJson: topCandidatesJson,
-              resolved: false,
-            },
-          });
         } else {
           // Zero candidates found
           failedCount++;
